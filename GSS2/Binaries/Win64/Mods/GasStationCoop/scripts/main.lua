@@ -151,8 +151,7 @@ local function IsInGameplayWorld()
     local World = GetCurrentWorld()
     if not World or not World:IsValid() then return false end
     local name = World:GetFullName():lower()
-    if name:find("menu") then return false end
-    return GetLocalPlayer() ~= nil
+    return name:find("demomapka") ~= nil and GetLocalPlayer() ~= nil
 end
 
 local function SyncLocalPlayerState()
@@ -432,17 +431,16 @@ local LevelAttemptCount = 0
 local LastAttemptTime = 0
 
 local function TryTriggerLevelLoad(menu)
-    if HasEnteredGameplay then return true end
-
-    -- Check if we are already in gameplay
     local World = GetCurrentWorld()
-    if World and World:IsValid() then
-        local wname = World:GetFullName():lower()
-        if not wname:find("menu") and GetLocalPlayer() ~= nil then
+    if not World or not World:IsValid() then return false end
+    local wname = World:GetFullName():lower()
+
+    if wname:find("demomapka") and GetLocalPlayer() ~= nil then
+        if not HasEnteredGameplay then
             HasEnteredGameplay = true
-            Log("[CO-OP] *** PLAYER SUCCESSFULLY IN STATION GAMEPLAY! ***")
-            return true
+            Log("[CO-OP] *** SUCCESSFULLY INSIDE STATION GAMEPLAY (DemoMapka)! ***")
         end
+        return true
     end
 
     if not menu or not menu:IsValid() then
@@ -456,47 +454,52 @@ local function TryTriggerLevelLoad(menu)
     Log(string.format("[CO-OP] Station Level Load Attempt #%d (Role: %s)...", LevelAttemptCount, tostring(Role)))
 
     if menu and menu:IsValid() then
-        -- Stage 1: If Continue button is ready (bCanBeLoaded == true), click it!
-        if menu.bCanBeLoaded and menu.ContinueButton and menu.ContinueButton:IsValid() then
-            Log("[CO-OP] [STAGE 1] Save slot confirmed! Clicking Continue to load Desert Station...")
+        -- Stage 1: Try Continue Button (loads starter save into station)
+        local canLoad = false
+        pcall(function() canLoad = menu.bCanBeLoaded end)
+
+        if canLoad then
+            Log("[CO-OP] [STAGE 1] Save slot confirmed (bCanBeLoaded=true)! Clicking Continue Button...")
             local s, err = pcall(function()
                 menu:BndEvt__ContinueButton_K2Node_ComponentBoundEvent_1_OnClicked__DelegateSignature()
             end)
-            if s then return true end
-            Log("[CO-OP] ContinueButton call failed: " .. tostring(err))
+            if s then
+                Log("[CO-OP] ContinueButton executed successfully!")
+                return true
+            else
+                Log("[CO-OP] ContinueButton failed: " .. tostring(err))
+            end
+        else
+            Log("[CO-OP] Save slot reading in progress (bCanBeLoaded=false)...")
         end
 
-        -- Stage 2: Direct Map Selection function on Menu Overview
-        Log("[CO-OP] [STAGE 2] Calling menu:OnMapSelected('DemoMapka')...")
-        local s2, err2 = pcall(function()
-            menu:OnMapSelected("DemoMapka")
-        end)
-        if s2 then return true end
-
-        -- Stage 3: If MapSelectionWidget is active, click first map (Route 66 / Desert Station)
-        if menu.MapSelectionWidget and menu.MapSelectionWidget:IsValid() then
-            Log("[CO-OP] [STAGE 3] MapSelectionWidget active! Clicking first map button...")
-            pcall(function()
+        -- Stage 2: If MapSelectionWidget is active, click first map (Route 66 / Desert Station)
+        pcall(function()
+            if menu.MapSelectionWidget and menu.MapSelectionWidget:IsValid() then
+                Log("[CO-OP] [STAGE 2] MapSelectionWidget active! Clicking first map button...")
                 local buttons = menu.MapSelectionWidget.MapsButtons
                 if buttons and #buttons > 0 and buttons[1]:IsValid() then
-                    buttons[1]:GamePadClick()
-                    buttons[1]:BndEvt__WBP_MapSelectionButton_Button_22_K2Node_ComponentBoundEvent_0_OnButtonClickedEvent__DelegateSignature()
+                    pcall(function() buttons[1]:GamePadClick() end)
+                    pcall(function() buttons[1]:BndEvt__WBP_MapSelectionButton_Button_22_K2Node_ComponentBoundEvent_0_OnButtonClickedEvent__DelegateSignature() end)
                 end
-            end)
-            return true
-        end
-
-        -- Stage 4: New Game Button
-        Log("[CO-OP] [STAGE 4] Triggering NewGameButton...")
-        pcall(function()
-            menu:BndEvt__NewGameButton_K2Node_ComponentBoundEvent_2_OnClicked__DelegateSignature()
-            menu:StartNewGame()
+            end
         end)
+
+        -- Stage 3: After waiting 5 attempts (~6-8s), try NewGameButton if still not loaded
+        if LevelAttemptCount >= 5 and not canLoad then
+            Log("[CO-OP] [STAGE 3] Triggering NewGameButton...")
+            pcall(function()
+                menu:BndEvt__NewGameButton_K2Node_ComponentBoundEvent_2_OnClicked__DelegateSignature()
+                menu:StartNewGame()
+            end)
+        end
+    else
+        Log("[CO-OP] MainMenuOverviewWidgetBP not found yet.")
     end
 
-    -- Stage 5: Direct Unreal Console fallback
-    if LevelAttemptCount >= 3 and World and World:IsValid() then
-        Log("[CO-OP] [STAGE 5] Direct console fallback: loading DemoMapka...")
+    -- Stage 4: Crash-Proof Console Fallback after 6 attempts
+    if LevelAttemptCount >= 6 and World and World:IsValid() then
+        Log("[CO-OP] [STAGE 4] Executing crash-proof console fallback: open DemoMapka...")
         local Kismet = StaticFindObject("/Script/Engine.Default__KismetSystemLibrary")
         if Kismet and Kismet:IsValid() then
             pcall(function()
@@ -688,7 +691,7 @@ LoopAsync(1000, function()
     local World = GetCurrentWorld()
     if World and World:IsValid() then
         local wname = World:GetFullName():lower()
-        if not wname:find("menu") and GetLocalPlayer() ~= nil then
+        if wname:find("demomapka") and GetLocalPlayer() ~= nil then
             if not HasEnteredGameplay then
                 HasEnteredGameplay = true
                 Log("[CO-OP] *** CONNECTED TO GAS STATION WORLD! MULTIPLAYER SYNC RUNNING. ***")
@@ -703,7 +706,10 @@ LoopAsync(1000, function()
         if now - LastAttemptTime >= 1 then
             LastAttemptTime = now
             ExecuteInGameThread(function()
-                TryTriggerLevelLoad(nil)
+                local s, err = pcall(TryTriggerLevelLoad, nil)
+                if not s then
+                    Log("[CO-OP ERROR in TryTriggerLevelLoad] " .. tostring(err))
+                end
             end)
         end
     end
