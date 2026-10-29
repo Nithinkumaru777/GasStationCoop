@@ -67,6 +67,12 @@ class NetworkRelayHost:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        try:
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)
+            self.sock.setsockopt(socket.IPPROTO_IP, socket.IP_TOS, 0x10)
+        except Exception:
+            pass
         self.sock.bind(("0.0.0.0", self.port))
         self.sock.setblocking(False)
         self.client_addr = None
@@ -171,6 +177,12 @@ class NetworkRelayClient:
         self.server_name = server_name or "Host's Gas Station"
         os.makedirs(self.netdir, exist_ok=True)
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)
+            self.sock.setsockopt(socket.IPPROTO_IP, socket.IP_TOS, 0x10)
+        except Exception:
+            pass
         self.sock.setblocking(False)
         self.running = True
         self.connected = False

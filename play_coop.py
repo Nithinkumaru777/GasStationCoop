@@ -1,6 +1,6 @@
 """Award-Winning, Next-Gen Co-op Launcher for Gas Station Simulator.
 Built with Edge Chromium Webview2, High-Contrast Cyber/Desert Aesthetic,
-Smooth CSS3 Keyframe Animations, Staggered Reveals & Glassmorphism.
+Smooth CSS3 Keyframe Animations, Staggered Reveals, Auto-Discovery & Pure Win32 Clipboard.
 
 Lead Architect & Creator: Nithin Kumar (Nithinkumaru777)
 Repository: https://github.com/Nithinkumaru777/GasStationCoop
@@ -11,7 +11,10 @@ import sys
 import socket
 import subprocess
 import ctypes
+from ctypes import wintypes
 import webbrowser
+import threading
+import time
 import webview
 
 DIR_A = r"D:\coop-sandbox\gss\A\GSS2\Binaries\Win64"
@@ -20,9 +23,57 @@ USER_DIR = r"D:\coop-sandbox\gss\userA"
 
 CREATE_NO_WINDOW = 0x08000000
 
+# -------------------------------------------------------------
+# Pure Win32 Zero-Latency Clipboard (No Tkinter, No Deadlocks)
+# -------------------------------------------------------------
+user32 = ctypes.windll.user32
+kernel32 = ctypes.windll.kernel32
+CF_UNICODETEXT = 13
+
+kernel32.GlobalAlloc.restype = ctypes.c_void_p
+kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+kernel32.GlobalLock.restype = ctypes.c_void_p
+kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+user32.GetClipboardData.restype = ctypes.c_void_p
+user32.GetClipboardData.argtypes = [wintypes.UINT]
+user32.SetClipboardData.restype = ctypes.c_void_p
+user32.SetClipboardData.argtypes = [wintypes.UINT, ctypes.c_void_p]
+
+def win32_get_clipboard_text():
+    if not user32.OpenClipboard(None):
+        return ""
+    try:
+        h = user32.GetClipboardData(CF_UNICODETEXT)
+        if not h:
+            return ""
+        p = kernel32.GlobalLock(h)
+        if not p:
+            return ""
+        val = ctypes.c_wchar_p(p).value
+        kernel32.GlobalUnlock(h)
+        return val or ""
+    finally:
+        user32.CloseClipboard()
+
+def win32_set_clipboard_text(text):
+    if not user32.OpenClipboard(None):
+        return False
+    try:
+        user32.EmptyClipboard()
+        data = (text + "\0").encode("utf-16le")
+        h = kernel32.GlobalAlloc(0x0042, len(data))  # GMEM_MOVEABLE | GMEM_ZEROINIT
+        p = kernel32.GlobalLock(h)
+        ctypes.memmove(p, data, len(data))
+        kernel32.GlobalUnlock(h)
+        user32.SetClipboardData(CF_UNICODETEXT, h)
+        return True
+    finally:
+        user32.CloseClipboard()
+
+
 def get_screen_metrics():
     try:
-        user32 = ctypes.windll.user32
         user32.SetProcessDPIAware()
         w = user32.GetSystemMetrics(0)
         h = user32.GetSystemMetrics(1)
@@ -34,7 +85,7 @@ def get_screen_metrics():
 
 def get_network_ips():
     ips = []
-    # 1. Primary LAN IP
+    # 1. Primary LAN IP (fastest socket connect, 0ms)
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
@@ -45,7 +96,7 @@ def get_network_ips():
     except Exception:
         pass
 
-    # 2. Radmin VPN / Tailscale / virtual adapter IPs via ipconfig
+    # 2. Virtual adapters (Radmin VPN, Tailscale)
     try:
         out = subprocess.check_output("ipconfig", text=True, stderr=subprocess.DEVNULL, creationflags=CREATE_NO_WINDOW)
         for line in out.splitlines():
@@ -58,7 +109,37 @@ def get_network_ips():
 
     return ips if ips else ["127.0.0.1"]
 
+
+def scan_for_local_host(timeout=0.6):
+    """Fast auto-discovery of local hosts on port 7777."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        s.settimeout(timeout)
+        s.sendto(b"GSS_DISCOVER", ("<broadcast>", 7777))
+        s.sendto(b"GSS_DISCOVER", ("127.0.0.1", 7777))
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                data, addr = s.recvfrom(1024)
+                text = data.decode("utf-8", errors="replace")
+                if text.startswith("GSS_OFFER:") or text.startswith("GSS_BEACON:"):
+                    parts = text.split(":", 2)
+                    name = parts[2] if len(parts) >= 3 else "Friend's Station"
+                    s.close()
+                    return {"found": True, "ip": addr[0], "name": name}
+            except socket.timeout:
+                break
+            except Exception:
+                pass
+        s.close()
+    except Exception:
+        pass
+    return {"found": False, "ip": "", "name": ""}
+
+
 def ensure_optimal_game_settings(w, h):
+    """Enforces high-performance 180Hz Borderless Mode at 2560x1600 native display."""
     ini_path = os.path.join(USER_DIR, "Saved__coopA", "Config", "WindowsNoEditor", "GameUserSettings.ini")
     try:
         os.makedirs(os.path.dirname(ini_path), exist_ok=True)
@@ -98,11 +179,11 @@ BenchmarkAlreadyRan=1.000000
 sg.ResolutionQuality=100.000000
 sg.ViewDistanceQuality=3
 sg.AntiAliasingQuality=3
-sg.ShadowQuality=3
-sg.PostProcessQuality=3
+sg.ShadowQuality=2
+sg.PostProcessQuality=2
 sg.TextureQuality=3
-sg.EffectsQuality=3
-sg.FoliageQuality=3
+sg.EffectsQuality=2
+sg.FoliageQuality=2
 sg.ShadingQuality=3
 
 [/Script/Engine.RendererSettings]
@@ -192,41 +273,30 @@ class LauncherApi:
             "all_ips": ips
         }
 
+    def check_for_host(self):
+        return scan_for_local_host(timeout=0.5)
+
     def copy_to_clipboard(self, text):
-        try:
-            subprocess.run(["clip"], input=text.encode("utf-16le"), check=True)
-            return True
-        except Exception:
-            return False
+        return win32_set_clipboard_text(text)
 
     def read_clipboard(self):
-        try:
-            import tkinter as tk
-            r = tk.Tk()
-            r.withdraw()
-            txt = r.clipboard_get()
-            r.destroy()
-            return txt
-        except Exception:
-            return ""
+        return win32_get_clipboard_text()
 
     def host_world(self):
         ips = get_network_ips()
         primary = ips[0]
-        self.copy_to_clipboard(primary)
+        win32_set_clipboard_text(primary)
 
-        # Save to my_ip.txt
         try:
             with open(os.path.join(DIR_A, "my_ip.txt"), "w", encoding="utf-8") as f:
                 f.write("\n".join(ips))
         except Exception:
             pass
 
-        import threading, time
         def do_launch():
-            time.sleep(1.8)
-            launch_game_process("host")
             time.sleep(1.2)
+            launch_game_process("host")
+            time.sleep(1.0)
             if self.window:
                 self.window.destroy()
 
@@ -238,11 +308,10 @@ class LauncherApi:
         if not clean_ip:
             clean_ip = "127.0.0.1"
 
-        import threading, time
         def do_launch():
-            time.sleep(1.5)
+            time.sleep(1.0)
             launch_game_process("guest", clean_ip)
-            time.sleep(1.2)
+            time.sleep(1.0)
             if self.window:
                 self.window.destroy()
 
@@ -266,7 +335,7 @@ HTML_UI = """<!DOCTYPE html>
 <style>
   :root {
     --bg-base: #060911;
-    --card-surface: rgba(15, 23, 42, 0.75);
+    --card-surface: rgba(15, 23, 42, 0.78);
     --card-border: rgba(255, 255, 255, 0.09);
     --card-hover-border: rgba(255, 255, 255, 0.22);
     --amber-neon: #f59e0b;
@@ -282,26 +351,28 @@ HTML_UI = """<!DOCTYPE html>
 
   * {
     margin: 0; padding: 0; box-sizing: border-box;
-    user-select: none; -webkit-user-select: none;
   }
 
   body {
     background: radial-gradient(circle at 50% 0%, #1e1b4b 0%, #090d18 50%, #04060a 100%);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     color: var(--text-primary);
-    height: 100vh;
-    overflow: hidden;
+    min-height: 100vh;
+    overflow-y: auto;
+    overflow-x: hidden;
     display: flex;
     flex-direction: column;
-    padding: 24px 26px 20px 26px;
+    padding: 22px 24px 20px 24px;
     position: relative;
-    animation: windowEntrance 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    user-select: none;
+    -webkit-user-select: none;
   }
 
-  @keyframes windowEntrance {
-    0% { opacity: 0; transform: scale(0.96) translateY(8px); }
-    100% { opacity: 1; transform: scale(1) translateY(0); }
-  }
+  /* Custom Slim Modern Scrollbar */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.2); }
+  ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.4); }
 
   .glow-orb-1 {
     position: absolute; width: 320px; height: 320px;
@@ -324,7 +395,7 @@ HTML_UI = """<!DOCTYPE html>
     text-align: center;
     position: relative;
     z-index: 2;
-    margin-bottom: 14px;
+    margin-bottom: 12px;
   }
 
   .route66-badge-container {
@@ -336,7 +407,7 @@ HTML_UI = """<!DOCTYPE html>
   }
 
   .shield-outer {
-    width: 60px; height: 60px;
+    width: 58px; height: 58px;
     background: linear-gradient(135deg, #1e293b, #0f172a);
     border: 2px solid var(--amber-neon);
     border-radius: 18px;
@@ -353,7 +424,7 @@ HTML_UI = """<!DOCTYPE html>
   }
 
   .title-glitch {
-    font-size: 23px;
+    font-size: 22px;
     font-weight: 900;
     letter-spacing: 1.5px;
     line-height: 1.15;
@@ -397,7 +468,7 @@ HTML_UI = """<!DOCTYPE html>
   .dev-attribution-card {
     position: relative;
     z-index: 2;
-    background: rgba(15, 23, 42, 0.7);
+    background: rgba(15, 23, 42, 0.72);
     backdrop-filter: blur(12px);
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 14px;
@@ -405,7 +476,7 @@ HTML_UI = """<!DOCTYPE html>
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 14px;
+    margin-bottom: 12px;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
     transition: all 0.3s ease;
   }
@@ -479,6 +550,46 @@ HTML_UI = """<!DOCTYPE html>
   }
   .btn-github-link svg {
     width: 14px; height: 14px; fill: currentColor;
+  }
+
+  /* Auto-Discovery Banner */
+  .auto-discovery-banner {
+    display: none;
+    position: relative;
+    z-index: 2;
+    background: rgba(16, 185, 129, 0.15);
+    border: 1px solid var(--emerald-neon);
+    border-radius: 12px;
+    padding: 10px 14px;
+    margin-bottom: 12px;
+    align-items: center;
+    justify-content: space-between;
+    box-shadow: 0 0 20px rgba(16, 185, 129, 0.25);
+    cursor: pointer;
+    animation: pulseBorder 2s infinite alternate ease-in-out;
+  }
+  @keyframes pulseBorder {
+    0% { border-color: rgba(16, 185, 129, 0.5); }
+    100% { border-color: rgba(16, 185, 129, 1); }
+  }
+  .auto-discovery-banner.show { display: flex; }
+  .disc-info { text-align: left; }
+  .disc-title { font-size: 12px; font-weight: 800; color: #34d399; }
+  .disc-sub { font-size: 11px; color: #cbd5e1; }
+  .btn-quick-join {
+    background: #10b981;
+    color: #000;
+    font-size: 11px;
+    font-weight: 800;
+    padding: 6px 12px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .btn-quick-join:hover {
+    background: #34d399;
+    box-shadow: 0 0 12px #34d399;
   }
 
   /* Action Cards */
@@ -603,16 +714,16 @@ HTML_UI = """<!DOCTYPE html>
     color: #cbd5e1;
   }
 
-  /* Join Drawer */
+  /* Join Drawer (Full Height & Never Clipped) */
   .join-drawer {
     display: none;
-    background: rgba(11, 17, 30, 0.95);
+    background: rgba(11, 17, 30, 0.96);
     border: 1px solid rgba(6, 182, 212, 0.35);
     border-radius: 14px;
-    padding: 14px 16px;
+    padding: 16px 18px;
     margin-top: -4px;
-    margin-bottom: 6px;
-    animation: drawerSlide 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    margin-bottom: 8px;
+    animation: drawerSlide 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
   }
   @keyframes drawerSlide {
     0% { opacity: 0; transform: translateY(-8px); }
@@ -621,81 +732,84 @@ HTML_UI = """<!DOCTYPE html>
   .join-drawer.active { display: block; }
 
   .drawer-label {
-    font-size: 11px;
-    font-weight: 700;
+    font-size: 12px;
+    font-weight: 800;
     color: #38bdf8;
     margin-bottom: 8px;
     display: flex;
     align-items: center;
-    gap: 5px;
+    gap: 6px;
   }
   .ip-input-box {
     display: flex;
     gap: 8px;
-    margin-bottom: 10px;
+    margin-bottom: 12px;
   }
   .ip-input {
     flex: 1;
-    background: rgba(0, 0, 0, 0.55);
-    border: 1px solid rgba(255, 255, 255, 0.16);
-    border-radius: 8px;
-    padding: 9px 12px;
+    background: rgba(0, 0, 0, 0.65);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 10px;
+    padding: 11px 14px;
     color: #38bdf8;
     font-family: Consolas, "Courier New", monospace;
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 700;
     letter-spacing: 0.5px;
     outline: none;
+    user-select: text !important;
+    -webkit-user-select: text !important;
     transition: all 0.25s ease;
   }
   .ip-input:focus {
     border-color: var(--cyan-neon);
-    box-shadow: 0 0 12px var(--cyan-glow);
+    box-shadow: 0 0 14px var(--cyan-glow);
+    background: rgba(0, 0, 0, 0.8);
   }
   .btn-paste {
-    background: rgba(255, 255, 255, 0.08);
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    border-radius: 8px;
-    padding: 0 12px;
-    font-size: 11px;
-    font-weight: 700;
-    color: #cbd5e1;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 10px;
+    padding: 0 16px;
+    font-size: 12px;
+    font-weight: 800;
+    color: #f1f5f9;
     cursor: pointer;
     transition: all 0.2s ease;
   }
   .btn-paste:hover {
-    background: rgba(255, 255, 255, 0.18);
-    color: #fff;
+    background: rgba(255, 255, 255, 0.22);
+    box-shadow: 0 0 10px rgba(255, 255, 255, 0.3);
   }
   .btn-connect-launch {
     width: 100%;
     background: linear-gradient(135deg, #0284c7, #06b6d4);
     border: none;
-    border-radius: 8px;
-    padding: 10px;
+    border-radius: 10px;
+    padding: 12px;
     color: #fff;
-    font-size: 12px;
-    font-weight: 800;
-    letter-spacing: 0.5px;
+    font-size: 13px;
+    font-weight: 900;
+    letter-spacing: 0.8px;
     text-transform: uppercase;
     cursor: pointer;
-    box-shadow: 0 4px 15px rgba(6, 182, 212, 0.35);
+    box-shadow: 0 4px 18px rgba(6, 182, 212, 0.4);
     transition: all 0.25s ease;
-    display: flex; align-items: center; justify-content: center; gap: 6px;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
   }
   .btn-connect-launch:hover {
-    filter: brightness(1.12);
-    box-shadow: 0 6px 20px rgba(6, 182, 212, 0.5);
+    filter: brightness(1.15);
+    box-shadow: 0 6px 25px rgba(6, 182, 212, 0.6);
     transform: translateY(-1px);
   }
 
   .footer-bar {
-    margin-top: auto;
+    margin-top: 14px;
     display: flex;
     align-items: center;
     justify-content: space-between;
     padding-top: 10px;
-    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
     position: relative;
     z-index: 2;
   }
@@ -703,7 +817,7 @@ HTML_UI = """<!DOCTYPE html>
     display: flex;
     align-items: center;
     gap: 6px;
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 600;
     color: #94a3b8;
   }
@@ -719,15 +833,15 @@ HTML_UI = """<!DOCTYPE html>
   }
 
   .toast-alert {
-    position: absolute;
+    position: fixed;
     bottom: 24px;
     left: 50%;
     transform: translateX(-50%) translateY(70px);
-    background: rgba(15, 23, 42, 0.95);
+    background: rgba(15, 23, 42, 0.96);
     backdrop-filter: blur(14px);
     border: 1px solid var(--emerald-neon);
     border-radius: 30px;
-    padding: 10px 20px;
+    padding: 10px 22px;
     display: flex;
     align-items: center;
     gap: 10px;
@@ -752,9 +866,9 @@ HTML_UI = """<!DOCTYPE html>
   }
 
   .launch-overlay {
-    position: absolute;
+    position: fixed;
     inset: 0;
-    background: rgba(4, 6, 12, 0.94);
+    background: rgba(4, 6, 12, 0.95);
     backdrop-filter: blur(16px);
     display: flex;
     flex-direction: column;
@@ -837,6 +951,15 @@ HTML_UI = """<!DOCTYPE html>
     </button>
   </div>
 
+  <!-- Auto-Discovered Host Banner -->
+  <div class="auto-discovery-banner" id="discBanner" onclick="connectToDiscoveredHost()">
+    <div class="disc-info">
+      <div class="disc-title">&#128994; Friend's Station Detected on Network:</div>
+      <div class="disc-sub" id="discName">Host: Loading...</div>
+    </div>
+    <button class="btn-quick-join">AUTO-JOIN &rarr;</button>
+  </div>
+
   <div class="cards-wrapper">
 
     <!-- Option 1: HOST -->
@@ -883,14 +1006,14 @@ HTML_UI = """<!DOCTYPE html>
         <svg style="width:14px;height:14px;fill:currentColor;" viewBox="0 0 24 24">
           <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/>
         </svg>
-        Target Host IP Address:
+        Target Friend's Host IP Address:
       </div>
       <div class="ip-input-box">
-        <input type="text" class="ip-input" id="hostIpInput" value="127.0.0.1" placeholder="e.g. 192.168.1.15" spellcheck="false" autocomplete="off">
+        <input type="text" class="ip-input" id="hostIpInput" value="127.0.0.1" placeholder="e.g. 192.168.1.13" spellcheck="false" autocomplete="off">
         <button class="btn-paste" onclick="pasteFromClipboard(event)">PASTE</button>
       </div>
       <button class="btn-connect-launch" onclick="triggerJoinAction(event)">
-        Connect to Station &rarr;
+        CONNECT TO STATION NOW &rarr;
       </button>
     </div>
 
@@ -919,13 +1042,20 @@ HTML_UI = """<!DOCTYPE html>
 
 <script>
   let drawerOpen = false;
+  let discoveredIp = null;
 
   function toggleJoinDrawer() {
     drawerOpen = !drawerOpen;
-    document.getElementById('joinDrawer').classList.toggle('active', drawerOpen);
+    const drawer = document.getElementById('joinDrawer');
+    drawer.classList.toggle('active', drawerOpen);
     document.getElementById('joinChevron').innerHTML = drawerOpen ? '&#9652;' : '&#9662;';
     if (drawerOpen) {
-      setTimeout(() => document.getElementById('hostIpInput').focus(), 150);
+      setTimeout(() => {
+        const inp = document.getElementById('hostIpInput');
+        inp.focus();
+        inp.select();
+        drawer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }, 100);
     }
   }
 
@@ -947,15 +1077,22 @@ HTML_UI = """<!DOCTYPE html>
   }
 
   function pasteFromClipboard(e) {
-    e.stopPropagation();
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
     if (window.pywebview && pywebview.api && pywebview.api.read_clipboard) {
       pywebview.api.read_clipboard().then(txt => {
-        if (txt) document.getElementById('hostIpInput').value = txt.trim();
+        if (txt && txt.trim()) {
+          const clean = txt.trim();
+          document.getElementById('hostIpInput').value = clean;
+          showToast('PASTED IP: ' + clean);
+        } else {
+          showToast('Clipboard is empty or contains no text');
+        }
+      }).catch(() => {
+        showToast('Could not read clipboard');
       });
-    } else {
-      navigator.clipboard.readText().then(text => {
-        if (text) document.getElementById('hostIpInput').value = text.trim();
-      }).catch(() => {});
     }
   }
 
@@ -973,7 +1110,10 @@ HTML_UI = """<!DOCTYPE html>
   }
 
   function triggerJoinAction(e) {
-    if (e) e.stopPropagation();
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
     const targetIp = document.getElementById('hostIpInput').value.trim() || '127.0.0.1';
     if (window.pywebview && pywebview.api) {
       pywebview.api.join_world(targetIp).then(res => {
@@ -984,12 +1124,38 @@ HTML_UI = """<!DOCTYPE html>
     }
   }
 
+  function connectToDiscoveredHost() {
+    if (discoveredIp) {
+      document.getElementById('hostIpInput').value = discoveredIp;
+      triggerJoinAction();
+    }
+  }
+
+  // Allow pressing Enter key to immediately connect!
+  document.getElementById('hostIpInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      triggerJoinAction(e);
+    }
+  });
+
   window.addEventListener('pywebviewready', () => {
     if (pywebview.api && pywebview.api.get_network_info) {
       pywebview.api.get_network_info().then(info => {
         if (info && info.primary_ip) {
           document.getElementById('networkStatusText').innerText = 'Network: ' + info.primary_ip + ' (Ready)';
-          document.getElementById('hostIpInput').value = info.primary_ip;
+        }
+      });
+    }
+
+    // Auto-Discovery probe
+    if (pywebview.api && pywebview.api.check_for_host) {
+      pywebview.api.check_for_host().then(res => {
+        if (res && res.found) {
+          discoveredIp = res.ip;
+          document.getElementById('discName').innerText = (res.name || 'Friend') + ' (' + res.ip + ')';
+          document.getElementById('discBanner').classList.add('show');
+          document.getElementById('hostIpInput').value = res.ip;
         }
       });
     }
@@ -1005,8 +1171,8 @@ def main():
         title="Gas Station Simulator Co-op Launcher",
         html=HTML_UI,
         js_api=api,
-        width=520,
-        height=660,
+        width=540,
+        height=730,
         resizable=False,
         background_color="#060911"
     )
