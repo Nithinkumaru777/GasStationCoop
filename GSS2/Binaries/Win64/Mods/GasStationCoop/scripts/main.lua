@@ -501,6 +501,112 @@ pcall(function()
     end)
 end)
 
+-- ============================================================
+-- Pause Menu & ESC Co-op Fix
+-- Fixes UE4 multiplayer glitch where Resume button stays stuck
+-- on screen or ESC minimizes/loses focus.
+-- ============================================================
+local function DismissPauseMenu()
+    SafeExec(function()
+        Log("[PAUSE] Dismissing Pause Menu and restoring full gameplay...")
+
+        -- 1. Remove all IngameMenuContainer widgets
+        local containers = FindAllOf("IngameMenuContainerWidgetBP_C") or {}
+        for _, c in ipairs(containers) do
+            if c and c:IsValid() then
+                pcall(function() c:RemoveFromViewport() end)
+                pcall(function() c:RemoveFromParent() end)
+                pcall(function() c:SetVisibility(2) end) -- ESlateVisibility::Collapsed
+            end
+        end
+
+        -- 2. Remove all IngameMenuOverview widgets
+        local overviews = FindAllOf("IngameMenuOverviewWidgetBP_C") or {}
+        for _, o in ipairs(overviews) do
+            if o and o:IsValid() then
+                pcall(function() o:RemoveFromViewport() end)
+                pcall(function() o:RemoveFromParent() end)
+                pcall(function() o:SetVisibility(2) end)
+            end
+        end
+
+        -- 3. Clear PauseMenuRef on all player characters
+        local chars = FindAllOf("PlayerCharacter_BP_C") or {}
+        for _, ch in ipairs(chars) do
+            if ch and ch:IsValid() then
+                pcall(function() ch.PauseMenuRef = nil end)
+            end
+        end
+
+        -- 4. Restore input mode to GameOnly and re-lock mouse to viewport
+        local PCs = FindAllOf("PlayerController") or {}
+        for _, pc in ipairs(PCs) do
+            if pc and pc:IsValid() then
+                pcall(function()
+                    pc.bShowMouseCursor = false
+                    pc.bEnableClickEvents = false
+                    pc.bEnableMouseOverEvents = false
+                    pc:SetIgnoreLookInput(false)
+                    pc:SetIgnoreMoveInput(false)
+                end)
+                pcall(function()
+                    local WBP = StaticFindObject("/Script/UMG.Default__WidgetBlueprintLibrary")
+                    if WBP and WBP:IsValid() then
+                        WBP:SetInputMode_GameOnly(pc)
+                        WBP:SetFocusToGameViewport()
+                    end
+                end)
+            end
+        end
+    end)
+end
+
+-- Hook IngameMenuContainer:ResumeGame
+pcall(function()
+    RegisterHook("/MenuSystemPro/Blueprints/UI/Menus/Ingame/IngameMenuContainerWidgetBP.IngameMenuContainerWidgetBP_C:ResumeGame", function(self)
+        DismissPauseMenu()
+    end)
+end)
+
+-- Hook IngameMenuOverview:BndEvt__ResumeButton_K2Node_ComponentBoundEvent_1_OnClicked__DelegateSignature
+pcall(function()
+    RegisterHook("/MenuSystemPro/Blueprints/UI/Menus/Ingame/IngameMenuOverviewWidgetBP.IngameMenuOverviewWidgetBP_C:BndEvt__ResumeButton_K2Node_ComponentBoundEvent_1_OnClicked__DelegateSignature", function(self)
+        DismissPauseMenu()
+    end)
+end)
+
+-- Hook IngameMenuOverview:ResumeManualCall
+pcall(function()
+    RegisterHook("/MenuSystemPro/Blueprints/UI/Menus/Ingame/IngameMenuOverviewWidgetBP.IngameMenuOverviewWidgetBP_C:ResumeManualCall", function(self)
+        DismissPauseMenu()
+    end)
+end)
+
+-- Hook IngameMenuOverview:OnPressedBack (ESC while paused)
+pcall(function()
+    RegisterHook("/MenuSystemPro/Blueprints/UI/Menus/Ingame/IngameMenuOverviewWidgetBP.IngameMenuOverviewWidgetBP_C:OnPressedBack", function(self)
+        DismissPauseMenu()
+    end)
+end)
+
+-- Register ESC hotkey to toggle / dismiss cleanly
+RegisterKeyBind(Key.ESCAPE, function()
+    local containers = FindAllOf("IngameMenuContainerWidgetBP_C") or {}
+    local isAnyVisible = false
+    for _, c in ipairs(containers) do
+        if c and c:IsValid() then
+            local status, inV = pcall(function() return c:IsInViewport() end)
+            if status and inV then
+                isAnyVisible = true
+                break
+            end
+        end
+    end
+    if isAnyVisible then
+        DismissPauseMenu()
+    end
+end)
+
 -- Dedicated Hotkeys:
 -- F9 = OPTION 1: HOST A WORLD
 RegisterKeyBind(Key.F9, function()

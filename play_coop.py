@@ -83,12 +83,9 @@ def launch_game(role, target_ip="127.0.0.1"):
             creationflags=CREATE_NO_WINDOW
         )
 
-    # 4. Launch game windowed
+    # 4. Launch game (native fullscreen, no windowed minimize glitch)
     args = [
         EXE_PATH,
-        "-windowed",
-        "-ResX=1280",
-        "-ResY=720",
         "-nosplash",
         "-saveddirsuffix=_coopA",
         f'-userdir="{USER_DIR}"'
