@@ -614,4 +614,129 @@ RegisterKeyBind(Key.F9, function()
     if LockRole("host") then HostListenServer() end
 end)
 
-Log("GasStationCoop initialized. Keybinds active: F7 (Dump State), F8 (Join 127.0.0.1:7777), F9 (Host Listen Server).")
+-- ============================================================
+-- In-Game Co-op Server Browser & Main Menu Integration
+-- ============================================================
+local DiscoveredServerName = "Searching for Server..."
+local DiscoveredServerIP = ""
+local ServerStatus = "OFFLINE"
+local RelayLaunched = false
+
+local function ReadServerInfo()
+    local f = io.open("net/server_info.txt", "r")
+    if not f then return end
+    local content = f:read("*all")
+    f:close()
+    if not content or content == "" then return end
+
+    for line in content:gmatch("[^\r\n]+") do
+        local k, v = line:match("^([%w_]+)=(.*)$")
+        if k == "SERVER_NAME" then DiscoveredServerName = v end
+        if k == "IP" then DiscoveredServerIP = v end
+        if k == "STATUS" then ServerStatus = v end
+    end
+end
+
+-- Launch the relay automatically in background if not already started
+local function EnsureBackgroundRelay()
+    if RelayLaunched then return end
+    RelayLaunched = true
+    SafeExec(function()
+        os.execute("cmd /c if not exist net mkdir net")
+        if Role == "host" then
+            Log("[IN-GAME] Launching Host Relay Server in background...")
+            os.execute('start /b python "gss_relay.py" --mode host --port 7777 --netdir "net"')
+        else
+            Log("[IN-GAME] Launching Auto-Discovery Client Relay in background...")
+            os.execute('start /b python "gss_relay.py" --mode auto --port 7777 --netdir "net"')
+        end
+    end)
+end
+
+-- Refresh and customize Main Menu
+local function UpdateMainMenuUI()
+    ReadServerInfo()
+
+    local menus = FindAllOf("MainMenuOverviewWidgetBP_C") or {}
+    for _, menu in ipairs(menus) do
+        if menu:IsValid() and menu.DLCButton and menu.DLCButton:IsValid() then
+            local btn = menu.DLCButton
+            pcall(function()
+                if Role == "host" then
+                    btn.Text = "CO-OP: " .. DiscoveredServerName
+                    if btn.ButtonText and btn.ButtonText:IsValid() then
+                        btn.ButtonText:SetText("CO-OP SERVER (HOSTING)")
+                    end
+                else
+                    if ServerStatus == "ONLINE" and DiscoveredServerIP ~= "" then
+                        btn.Text = "JOIN: " .. DiscoveredServerName
+                        if btn.ButtonText and btn.ButtonText:IsValid() then
+                            btn.ButtonText:SetText("JOIN: " .. DiscoveredServerName:upper())
+                        end
+                    else
+                        btn.Text = "SEARCHING CO-OP..."
+                        if btn.ButtonText and btn.ButtonText:IsValid() then
+                            btn.ButtonText:SetText("SEARCHING CO-OP...")
+                        end
+                    end
+                end
+                btn:SetupButtonText()
+            end)
+        end
+    end
+
+    -- Draw Minecraft-style on-screen banner in Main Menu
+    local World = GetCurrentWorld()
+    if World and World:IsValid() and World:GetFullName():lower():find("menu") then
+        local Kismet = StaticFindObject("/Script/Engine.Default__KismetSystemLibrary")
+        if Kismet and Kismet:IsValid() then
+            local banner = ""
+            local color = {R = 0.0, G = 1.0, B = 0.5, A = 1.0}
+            if Role == "host" then
+                banner = string.format("[CO-OP HOST] Server Active: '%s' | LAN Auto-Discovery ON", DiscoveredServerName)
+            elseif ServerStatus == "ONLINE" and DiscoveredServerIP ~= "" then
+                banner = string.format("✨ [CO-OP SERVER DETECTED] '%s' (%s:7777) | Click [JOIN] or Start Game!", DiscoveredServerName, DiscoveredServerIP)
+            else
+                banner = "[CO-OP] Auto-detecting Host on LAN... (Make sure Host started server)"
+                color = {R = 1.0, G = 0.8, B = 0.2, A = 1.0}
+            end
+            pcall(function()
+                Kismet:PrintString(World, banner, true, false, color, 1.8)
+            end)
+        end
+    end
+end
+
+-- Hook Main Menu DLC Button Click to trigger Co-op Join
+pcall(function()
+    RegisterHook("/Game/Blueprints/Widgets/MainMenu/MainMenuOverviewWidgetBP.MainMenuOverviewWidgetBP_C:BndEvt__MainMenuOverviewWidgetBP_DLCButton_K2Node_ComponentBoundEvent_3_OnClicked__DelegateSignature", function(self)
+        SafeExec(function()
+            local menu = self:get()
+            Log("[IN-GAME MENU] Co-op Button clicked!")
+            if Role == "guest" then
+                Log(string.format("[IN-GAME] Joining server '%s' (%s)...", DiscoveredServerName, DiscoveredServerIP))
+                if menu.ContinueButton and menu.ContinueButton:IsValid() and menu.bCanBeLoaded then
+                    menu:BndEvt__ContinueButton_K2Node_ComponentBoundEvent_1_OnClicked__DelegateSignature()
+                else
+                    menu:StartNewGame()
+                end
+            else
+                Log("[IN-GAME] Hosting Co-op Server! Loading station...")
+                if menu.ContinueButton and menu.ContinueButton:IsValid() and menu.bCanBeLoaded then
+                    menu:BndEvt__ContinueButton_K2Node_ComponentBoundEvent_1_OnClicked__DelegateSignature()
+                else
+                    menu:StartNewGame()
+                end
+            end
+        end)
+    end)
+end)
+
+-- Auto-start background relay and monitor menu every 1.5s
+LoopAsync(1500, function()
+    EnsureBackgroundRelay()
+    UpdateMainMenuUI()
+    return false -- keep looping
+end)
+
+Log("GasStationCoop initialized. In-game Co-op Menu & Server Browser active.")
