@@ -1,0 +1,9 @@
+*.log
+*.tmp
+__pycache__/
+*.pyc
+net/
+userA/
+userB/
+.vscode/
+.idea/
