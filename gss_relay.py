@@ -1,9 +1,9 @@
 """Gas Station Simulator Co-op Python Network Relay & State Broker
-Supports:
-  1. Network Host:   python gss_relay.py --mode host [--port 7777] [--netdir <path>]
-  2. Network Client: python gss_relay.py --mode client --connect <HOST_IP> [--port 7777] [--netdir <path>]
-  3. Local Sandbox:  python gss_relay.py --mode local (bridges Sandbox A and B on 1 PC)
-Zero third-party dependencies — uses Python standard library.
+Features:
+  - Minecraft-style LAN Auto-Discovery (zero-configuration, automatic host detection)
+  - 60 Hz zero-drop player position & rotation streaming
+  - Real-time event broker for shared wallet, trash cleaning, fueling & register locks
+Zero third-party dependencies — uses standard Python library only.
 """
 import os
 import sys
@@ -17,7 +17,7 @@ DIR_A_DEFAULT = r"D:\coop-sandbox\gss\A\GSS2\Binaries\Win64\net"
 DIR_B_DEFAULT = r"D:\coop-sandbox\gss\B\GSS2\Binaries\Win64\net"
 
 def get_local_ip():
-    """Returns local LAN IP for easy sharing with a friend."""
+    """Returns local LAN IP for reference."""
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
@@ -46,29 +46,34 @@ class NetworkRelayHost:
         self.port = port
         os.makedirs(self.netdir, exist_ok=True)
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         self.sock.bind(("0.0.0.0", self.port))
         self.sock.setblocking(False)
         self.client_addr = None
         self.running = True
-        self.last_client_ping = 0
 
     def start(self):
         local_ip = get_local_ip()
         print("=" * 60)
-        print("  GAS STATION SIMULATOR CO-OP RELAY [HOST]")
+        print("  ⛽ GAS STATION SIMULATOR CO-OP RELAY [HOST / SERVER]")
         print("=" * 60)
-        print(f"  Listening on:   0.0.0.0:{self.port} (UDP)")
-        print(f"  Your Local IP:  {local_ip}")
-        print(f"  Net Directory:  {self.netdir}")
+        print(f"  Listening on:     0.0.0.0:{self.port} (UDP)")
+        print(f"  Local IP:         {local_ip}")
+        print(f"  LAN Discovery:    ACTIVE (Minecraft-Style Auto-Detect)")
+        print(f"  Net Directory:    {self.netdir}")
         print("-" * 60)
-        print(f"  Share your IP ({local_ip}) or VPN IP (Radmin/Hamachi/Tailscale)")
-        print("  with your friend to connect.")
+        print("  Your friend's game will automatically detect you on LAN!")
+        print("  (Or if playing over Internet via Radmin/Tailscale, share your VPN IP)")
         print("=" * 60)
-        print("[HOST] Waiting for friend connection...")
+        print("[HOST] Server is live. Waiting for friend to join...\n")
 
-        # Receive thread
-        t = threading.Thread(target=self._recv_loop, daemon=True)
-        t.start()
+        # Start beacon broadcaster thread (every 1.5 seconds)
+        t_beacon = threading.Thread(target=self._beacon_loop, daemon=True)
+        t_beacon.start()
+
+        # Start receive thread
+        t_recv = threading.Thread(target=self._recv_loop, daemon=True)
+        t_recv.start()
 
         # Send loop (60 Hz)
         local_state_file = os.path.join(self.netdir, "local_player.state")
@@ -79,9 +84,8 @@ class NetworkRelayHost:
         try:
             while self.running:
                 now = time.time()
-                # If client is connected, stream local state
                 if self.client_addr:
-                    # Stream player state
+                    # Stream player transform
                     if os.path.exists(local_state_file):
                         try:
                             mtime = os.path.getmtime(local_state_file)
@@ -112,6 +116,19 @@ class NetworkRelayHost:
         except KeyboardInterrupt:
             print("\n[HOST] Relay stopped.")
 
+    def _beacon_loop(self):
+        """Broadcasts presence beacon so clients can auto-detect on LAN."""
+        beacon_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        beacon_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        beacon_msg = f"GSS_BEACON:{self.port}".encode("ascii")
+
+        while self.running:
+            try:
+                beacon_sock.sendto(beacon_msg, ("<broadcast>", self.port))
+            except Exception:
+                pass
+            time.sleep(1.5)
+
     def _recv_loop(self):
         remote_state_file = os.path.join(self.netdir, "remote_player.state")
         events_in_file = os.path.join(self.netdir, "events.in")
@@ -122,9 +139,17 @@ class NetworkRelayHost:
                 if not data:
                     continue
 
+                # Handle Minecraft-style LAN discovery probe
+                if data == b"GSS_DISCOVER":
+                    offer = f"GSS_OFFER:{self.port}".encode("ascii")
+                    self.sock.sendto(offer, addr)
+                    print(f"[AUTO-DISCOVERY] Responded to discovery probe from {addr[0]}!")
+                    continue
+
                 if self.client_addr != addr:
                     self.client_addr = addr
-                    print(f"\n[HOST] >>> Friend connected from {addr[0]}:{addr[1]}! <<<")
+                    print(f"\n[HOST] ✨ >>> FRIEND CONNECTED FROM {addr[0]}:{addr[1]}! <<<")
+                    print("[HOST] Co-op state streaming is active!\n")
 
                 if data.startswith(b"PING"):
                     self.sock.sendto(b"PONG", addr)
@@ -151,14 +176,48 @@ class NetworkRelayClient:
         self.running = True
         self.connected = False
 
+    @staticmethod
+    def auto_discover_host(timeout=2.5, port=DEFAULT_PORT):
+        """Probes local network for active Host server via UDP broadcast."""
+        print(f"[AUTO-DETECT] Searching for Gas Station Simulator Host on network...")
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        s.settimeout(0.5)
+
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            try:
+                # Send probe
+                s.sendto(b"GSS_DISCOVER", ("<broadcast>", port))
+            except Exception:
+                pass
+
+            # Listen for reply or beacon
+            listen_end = time.time() + 0.5
+            while time.time() < listen_end:
+                try:
+                    data, addr = s.recvfrom(1024)
+                    if data.startswith(b"GSS_OFFER:") or data.startswith(b"GSS_BEACON:"):
+                        host_ip = addr[0]
+                        s.close()
+                        return host_ip
+                except socket.timeout:
+                    break
+                except Exception:
+                    pass
+            time.sleep(0.1)
+
+        s.close()
+        return None
+
     def start(self):
         print("=" * 60)
-        print("  GAS STATION SIMULATOR CO-OP RELAY [CLIENT]")
+        print("  ⛽ GAS STATION SIMULATOR CO-OP RELAY [CLIENT / GUEST]")
         print("=" * 60)
-        print(f"  Target Host:    {self.host_addr[0]}:{self.host_addr[1]} (UDP)")
-        print(f"  Net Directory:  {self.netdir}")
+        print(f"  Connected to Host:  {self.host_addr[0]}:{self.host_addr[1]} (UDP)")
+        print(f"  Net Directory:      {self.netdir}")
         print("=" * 60)
-        print(f"[CLIENT] Connecting to host at {self.host_addr[0]}:{self.host_addr[1]}...")
+        print(f"[CLIENT] Connecting to host at {self.host_addr[0]}...")
 
         # Receive thread
         t = threading.Thread(target=self._recv_loop, daemon=True)
@@ -173,7 +232,7 @@ class NetworkRelayClient:
         try:
             while self.running:
                 now = time.time()
-                # Send periodic ping / keepalive
+                # Send heartbeat ping every 2s
                 if now - last_ping > 2.0:
                     try:
                         self.sock.sendto(b"PING", self.host_addr)
@@ -224,12 +283,13 @@ class NetworkRelayClient:
 
                 if not self.connected:
                     self.connected = True
-                    print(f"\n[CLIENT] >>> Connected to Host ({addr[0]}:{addr[1]})! <<<")
+                    print(f"\n[CLIENT] ✨ >>> CONNECTED TO HOST ({addr[0]}:{addr[1]})! <<<")
+                    print("[CLIENT] Co-op state streaming is active!\n")
 
                 if data == b"PONG":
                     if not self.connected:
                         self.connected = True
-                        print(f"\n[CLIENT] >>> Connected to Host! Handshake OK <<<")
+                        print(f"\n[CLIENT] ✨ >>> CONNECTED TO HOST! Handshake OK <<<")
                 elif data.startswith(b"POS:"):
                     pos_bytes = data[4:]
                     atomic_write(remote_state_file, pos_bytes)
@@ -268,7 +328,6 @@ class LocalSandboxBroker:
 
         try:
             while self.running:
-                # Transfer A -> B
                 try:
                     if os.path.exists(file_a_to_b):
                         mtime = os.path.getmtime(file_a_to_b)
@@ -278,7 +337,6 @@ class LocalSandboxBroker:
                             atomic_write(file_b_remote, data)
                             last_a_mtime = mtime
 
-                    # Transfer B -> A
                     if os.path.exists(file_b_to_a):
                         mtime = os.path.getmtime(file_b_to_a)
                         if mtime != last_b_mtime:
@@ -287,7 +345,6 @@ class LocalSandboxBroker:
                             atomic_write(file_a_remote, data)
                             last_b_mtime = mtime
 
-                    # Transfer events A -> B
                     if os.path.exists(events_a):
                         with open(events_a, "r") as fa:
                             evs = fa.read()
@@ -295,7 +352,6 @@ class LocalSandboxBroker:
                         with open(events_b_in, "a") as fb:
                             fb.write(evs)
 
-                    # Transfer events B -> A
                     if os.path.exists(events_b):
                         with open(events_b, "r") as fb:
                             evs = fb.read()
@@ -312,9 +368,9 @@ class LocalSandboxBroker:
 
 def main():
     parser = argparse.ArgumentParser(description="Gas Station Simulator Co-op Network Relay")
-    parser.add_argument("--mode", choices=["host", "client", "local"], default="local",
-                        help="Relay mode: host (server for friend), client (join friend), or local (twin sandboxes on 1 PC)")
-    parser.add_argument("--connect", default="127.0.0.1", help="Host IP to connect to (client mode only)")
+    parser.add_argument("--mode", choices=["host", "client", "local", "auto"], default="auto",
+                        help="Relay mode: host, client, local (twin sandboxes), or auto (auto-detect host on LAN)")
+    parser.add_argument("--connect", default="", help="Host IP to connect to (client mode)")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="UDP port (default: 7777)")
     parser.add_argument("--netdir", default="", help="Path to local game 'net' directory")
 
@@ -323,12 +379,11 @@ def main():
     # Auto-resolve netdir if not specified
     netdir = args.netdir
     if not netdir:
-        # Check if running in GSS2/Binaries/Win64
         if os.path.isdir("net"):
             netdir = os.path.abspath("net")
         elif os.path.isdir(DIR_A_DEFAULT) and args.mode == "host":
             netdir = DIR_A_DEFAULT
-        elif os.path.isdir(DIR_B_DEFAULT) and args.mode == "client":
+        elif os.path.isdir(DIR_B_DEFAULT) and args.mode in ("client", "auto"):
             netdir = DIR_B_DEFAULT
         else:
             netdir = os.path.abspath("net")
@@ -336,9 +391,48 @@ def main():
     if args.mode == "host":
         relay = NetworkRelayHost(netdir=netdir, port=args.port)
         relay.start()
-    elif args.mode == "client":
-        relay = NetworkRelayClient(host_ip=args.connect, netdir=netdir, port=args.port)
+
+    elif args.mode in ("client", "auto"):
+        target_ip = args.connect.strip()
+
+        # If no IP provided, perform Minecraft-style LAN Auto-Discovery!
+        if not target_ip:
+            discovered = NetworkRelayClient.auto_discover_host(timeout=2.5, port=args.port)
+            if discovered:
+                print(f"\n============================================================")
+                print(f"  ✨ [AUTO-DETECT SUCCESS] Found Host Server at: {discovered}")
+                print(f"  Connecting automatically (Like Minecraft LAN)...")
+                print(f"============================================================\n")
+                target_ip = discovered
+            else:
+                print(f"[AUTO-DETECT] No Host found on local LAN within 2.5 seconds.")
+                # Check saved IP in host_ip.txt
+                saved_ip = ""
+                if os.path.exists("host_ip.txt"):
+                    try:
+                        with open("host_ip.txt", "r") as f:
+                            saved_ip = f.read().strip()
+                    except Exception:
+                        pass
+
+                prompt = f"Enter Host IP [{saved_ip}]: " if saved_ip else "Enter Host IP: "
+                user_input = input(prompt).strip()
+                target_ip = user_input or saved_ip
+
+                if not target_ip:
+                    print("[ERROR] No Host IP provided. Exiting.")
+                    sys.exit(1)
+
+        # Save verified IP
+        try:
+            with open("host_ip.txt", "w") as f:
+                f.write(target_ip)
+        except Exception:
+            pass
+
+        relay = NetworkRelayClient(host_ip=target_ip, netdir=netdir, port=args.port)
         relay.start()
+
     else:
         broker = LocalSandboxBroker()
         broker.start()
