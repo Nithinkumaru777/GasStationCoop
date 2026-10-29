@@ -8,6 +8,8 @@ import sys
 import socket
 import subprocess
 
+CREATE_NO_WINDOW = 0x08000000
+
 def get_network_ips():
     ips = []
     # 1. Primary outbound LAN IP
@@ -23,7 +25,7 @@ def get_network_ips():
 
     # 2. Radmin VPN / Tailscale / virtual adapter IPs via ipconfig
     try:
-        out = subprocess.check_output("ipconfig", text=True, stderr=subprocess.DEVNULL)
+        out = subprocess.check_output("ipconfig", text=True, stderr=subprocess.DEVNULL, creationflags=CREATE_NO_WINDOW)
         for line in out.splitlines():
             if "IPv4" in line:
                 val = line.split(":")[-1].strip()
@@ -50,8 +52,8 @@ def run_coop_menu():
         # Center on screen
         root.eval('tk::PlaceWindow . center')
 
-        title_lbl = tk.Label(root, text="⛽ GAS STATION CO-OP", font=("Arial", 16, "bold"), fg="#ffb703", bg="#1e1e24")
-        title_lbl.pack(pady=(15, 5))
+        title_lbl = tk.Label(root, text="GAS STATION CO-OP", font=("Arial", 15, "bold"), fg="#ffb703", bg="#1e1e24")
+        title_lbl.pack(pady=(15, 4))
 
         subtitle_lbl = tk.Label(root, text="Choose how you want to play:", font=("Arial", 10), fg="#e0e0e0", bg="#1e1e24")
         subtitle_lbl.pack(pady=(0, 15))
@@ -64,20 +66,20 @@ def run_coop_menu():
         def on_host():
             chosen_action[0] = "host"
             all_ips = get_network_ips()
-            ip_str = " / ".join(all_ips)
+            ip_str = "  /  ".join(all_ips)
             # Copy first IP to clipboard
             root.clipboard_clear()
             root.clipboard_append(all_ips[0])
-            with open("role.txt", "w") as f:
+            with open("role.txt", "w", encoding="utf-8") as f:
                 f.write("host\n")
-            with open("net/role.txt", "w") as f:
+            with open("net/role.txt", "w", encoding="utf-8") as f:
                 f.write("host\n")
-            with open("my_ip.txt", "w") as f:
+            with open("my_ip.txt", "w", encoding="utf-8") as f:
                 f.write("\n".join(all_ips))
             messagebox.showinfo(
                 "Host World Started!",
                 f"Your Co-op World is starting!\n\n"
-                f"Your IP Address:\n👉 {ip_str}\n\n"
+                f"Your IP Address:\n>> {ip_str} <<\n\n"
                 f"The IP has been COPIED to your clipboard!\n"
                 f"Send it to your friend so they can join from any Wi-Fi.",
                 parent=root
@@ -88,7 +90,7 @@ def run_coop_menu():
             saved_ip = "127.0.0.1"
             if os.path.exists("host_ip.txt"):
                 try:
-                    with open("host_ip.txt", "r") as f:
+                    with open("host_ip.txt", "r", encoding="utf-8") as f:
                         saved_ip = f.read().strip() or "127.0.0.1"
                 except Exception:
                     pass
@@ -96,21 +98,21 @@ def run_coop_menu():
             target_ip = simpledialog.askstring(
                 "Join Co-op World",
                 "Enter your friend's Host IP address:\n\n"
-                "• Same Wi-Fi: Local LAN IP (e.g. 192.168.1.x)\n"
-                "• Different Wi-Fi: Radmin VPN (e.g. 26.x.x.x) or Tailscale IP",
+                "* Same Wi-Fi: Local LAN IP (e.g. 192.168.1.x)\n"
+                "* Different Wi-Fi: Radmin VPN or Tailscale IP",
                 initialvalue=saved_ip,
                 parent=root
             )
 
             if target_ip and target_ip.strip():
                 clean_ip = target_ip.strip()
-                with open("role.txt", "w") as f:
+                with open("role.txt", "w", encoding="utf-8") as f:
                     f.write("guest\n")
-                with open("net/role.txt", "w") as f:
+                with open("net/role.txt", "w", encoding="utf-8") as f:
                     f.write("guest\n")
-                with open("host_ip.txt", "w") as f:
+                with open("host_ip.txt", "w", encoding="utf-8") as f:
                     f.write(clean_ip)
-                with open("net/host_ip.txt", "w") as f:
+                with open("net/host_ip.txt", "w", encoding="utf-8") as f:
                     f.write(clean_ip)
                 chosen_action[0] = f"join:{clean_ip}"
                 root.destroy()
@@ -118,8 +120,8 @@ def run_coop_menu():
         # Option 1: HOST A WORLD Button
         host_btn = tk.Button(
             btn_frame,
-            text="🏠  HOST A WORLD\nStart your station & invite friends",
-            font=("Arial", 11, "bold"),
+            text="1. HOST A WORLD\nStart your station & invite friends",
+            font=("Arial", 10, "bold"),
             bg="#2a9d8f",
             fg="white",
             activebackground="#21867a",
@@ -133,8 +135,8 @@ def run_coop_menu():
         # Option 2: JOIN A WORLD Button
         join_btn = tk.Button(
             btn_frame,
-            text="🌐  JOIN A WORLD\nConnect to friend via IP (Any Wi-Fi / LAN)",
-            font=("Arial", 11, "bold"),
+            text="2. JOIN A WORLD\nConnect to friend via IP (Any Wi-Fi / LAN)",
+            font=("Arial", 10, "bold"),
             bg="#e76f51",
             fg="white",
             activebackground="#cf583b",
@@ -149,9 +151,7 @@ def run_coop_menu():
         return chosen_action[0]
 
     except Exception as e:
-        print(f"[COOP_MENU_ERROR] {e}")
         return None
 
 if __name__ == "__main__":
     action = run_coop_menu()
-    print(f"ACTION={action}")
