@@ -1,6 +1,7 @@
 """Gas Station Simulator Co-op Python Network Relay & State Broker
 Features:
   - Minecraft-style LAN Auto-Discovery (zero-configuration, automatic host detection)
+  - Seamless in-game dynamic switching (Host / Guest / Auto-Detect)
   - 60 Hz zero-drop player position & rotation streaming
   - Real-time event broker for shared wallet, trash cleaning, fueling & register locks
 Zero third-party dependencies — uses standard Python library only.
@@ -16,6 +17,7 @@ DEFAULT_PORT = 7777
 DIR_A_DEFAULT = r"D:\coop-sandbox\gss\A\GSS2\Binaries\Win64\net"
 DIR_B_DEFAULT = r"D:\coop-sandbox\gss\B\GSS2\Binaries\Win64\net"
 
+
 def get_local_ip():
     """Returns local LAN IP for reference."""
     try:
@@ -26,6 +28,13 @@ def get_local_ip():
         return ip
     except Exception:
         return "127.0.0.1"
+
+
+def get_server_display_name():
+    """Returns user-friendly server name like Minecraft LAN."""
+    name = os.getenv("USERNAME") or os.getenv("USER") or "Player"
+    return f"{name}'s Gas Station"
+
 
 def atomic_write(filepath, content_bytes):
     """Atomic file write (.tmp + replace) so UE4SS Lua never reads half-written lines."""
@@ -40,10 +49,20 @@ def atomic_write(filepath, content_bytes):
     except Exception:
         pass
 
+
+def write_server_info(netdir, status, server_name, ip, port=DEFAULT_PORT):
+    """Writes server_info.txt for UE4SS Lua in-game menu display."""
+    os.makedirs(netdir, exist_ok=True)
+    info_path = os.path.join(netdir, "server_info.txt")
+    content = f"STATUS={status}\nSERVER_NAME={server_name}\nIP={ip}\nPORT={port}\n"
+    atomic_write(info_path, content.encode("utf-8"))
+
+
 class NetworkRelayHost:
-    def __init__(self, netdir, port=DEFAULT_PORT):
+    def __init__(self, netdir, port=DEFAULT_PORT, server_name=None):
         self.netdir = netdir
         self.port = port
+        self.server_name = server_name or get_server_display_name()
         os.makedirs(self.netdir, exist_ok=True)
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -57,17 +76,19 @@ class NetworkRelayHost:
         print("=" * 60)
         print("  ⛽ GAS STATION SIMULATOR CO-OP RELAY [HOST / SERVER]")
         print("=" * 60)
+        print(f"  Server Name:      {self.server_name}")
         print(f"  Listening on:     0.0.0.0:{self.port} (UDP)")
         print(f"  Local IP:         {local_ip}")
         print(f"  LAN Discovery:    ACTIVE (Minecraft-Style Auto-Detect)")
         print(f"  Net Directory:    {self.netdir}")
         print("-" * 60)
-        print("  Your friend's game will automatically detect you on LAN!")
-        print("  (Or if playing over Internet via Radmin/Tailscale, share your VPN IP)")
+        print("  Friends in-game will auto-detect your server in Main Menu!")
         print("=" * 60)
         print("[HOST] Server is live. Waiting for friend to join...\n")
 
-        # Start beacon broadcaster thread (every 1.5 seconds)
+        write_server_info(self.netdir, "HOSTING", self.server_name, "127.0.0.1", self.port)
+
+        # Start beacon broadcaster thread
         t_beacon = threading.Thread(target=self._beacon_loop, daemon=True)
         t_beacon.start()
 
@@ -75,7 +96,7 @@ class NetworkRelayHost:
         t_recv = threading.Thread(target=self._recv_loop, daemon=True)
         t_recv.start()
 
-        # Send loop (60 Hz)
+        # 60 Hz State Sync loop
         local_state_file = os.path.join(self.netdir, "local_player.state")
         events_out_file = os.path.join(self.netdir, "events.out")
         last_mtime = 0
@@ -120,7 +141,7 @@ class NetworkRelayHost:
         """Broadcasts presence beacon so clients can auto-detect on LAN."""
         beacon_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         beacon_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        beacon_msg = f"GSS_BEACON:{self.port}".encode("ascii")
+        beacon_msg = f"GSS_BEACON:{self.port}:{self.server_name}".encode("utf-8")
 
         while self.running:
             try:
@@ -141,9 +162,8 @@ class NetworkRelayHost:
 
                 # Handle Minecraft-style LAN discovery probe
                 if data == b"GSS_DISCOVER":
-                    offer = f"GSS_OFFER:{self.port}".encode("ascii")
+                    offer = f"GSS_OFFER:{self.port}:{self.server_name}".encode("utf-8")
                     self.sock.sendto(offer, addr)
-                    print(f"[AUTO-DISCOVERY] Responded to discovery probe from {addr[0]}!")
                     continue
 
                 if self.client_addr != addr:
@@ -167,9 +187,10 @@ class NetworkRelayHost:
 
 
 class NetworkRelayClient:
-    def __init__(self, host_ip, netdir, port=DEFAULT_PORT):
+    def __init__(self, host_ip, netdir, port=DEFAULT_PORT, server_name=None):
         self.host_addr = (host_ip, port)
         self.netdir = netdir
+        self.server_name = server_name or "Host's Gas Station"
         os.makedirs(self.netdir, exist_ok=True)
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setblocking(False)
@@ -177,30 +198,31 @@ class NetworkRelayClient:
         self.connected = False
 
     @staticmethod
-    def auto_discover_host(timeout=2.5, port=DEFAULT_PORT):
-        """Probes local network for active Host server via UDP broadcast."""
-        print(f"[AUTO-DETECT] Searching for Gas Station Simulator Host on network...")
+    def auto_discover_host(timeout=2.0, port=DEFAULT_PORT):
+        """Probes local network for active Host server via UDP broadcast and localhost."""
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        s.settimeout(0.5)
+        s.settimeout(0.3)
 
         start_time = time.time()
         while time.time() - start_time < timeout:
+            # Send probe to LAN broadcast and localhost
             try:
-                # Send probe
                 s.sendto(b"GSS_DISCOVER", ("<broadcast>", port))
+                s.sendto(b"GSS_DISCOVER", ("127.0.0.1", port))
             except Exception:
                 pass
 
-            # Listen for reply or beacon
-            listen_end = time.time() + 0.5
+            listen_end = time.time() + 0.3
             while time.time() < listen_end:
                 try:
                     data, addr = s.recvfrom(1024)
-                    if data.startswith(b"GSS_OFFER:") or data.startswith(b"GSS_BEACON:"):
-                        host_ip = addr[0]
+                    text = data.decode("utf-8", errors="replace")
+                    if text.startswith("GSS_OFFER:") or text.startswith("GSS_BEACON:"):
+                        parts = text.split(":", 2)
+                        s_name = parts[2] if len(parts) >= 3 else "Host's Gas Station"
                         s.close()
-                        return host_ip
+                        return addr[0], s_name
                 except socket.timeout:
                     break
                 except Exception:
@@ -208,16 +230,18 @@ class NetworkRelayClient:
             time.sleep(0.1)
 
         s.close()
-        return None
+        return None, None
 
     def start(self):
         print("=" * 60)
         print("  ⛽ GAS STATION SIMULATOR CO-OP RELAY [CLIENT / GUEST]")
         print("=" * 60)
         print(f"  Connected to Host:  {self.host_addr[0]}:{self.host_addr[1]} (UDP)")
+        print(f"  Server Name:        {self.server_name}")
         print(f"  Net Directory:      {self.netdir}")
         print("=" * 60)
-        print(f"[CLIENT] Connecting to host at {self.host_addr[0]}...")
+
+        write_server_info(self.netdir, "CONNECTED", self.server_name, self.host_addr[0], self.host_addr[1])
 
         # Receive thread
         t = threading.Thread(target=self._recv_loop, daemon=True)
@@ -232,8 +256,8 @@ class NetworkRelayClient:
         try:
             while self.running:
                 now = time.time()
-                # Send heartbeat ping every 2s
-                if now - last_ping > 2.0:
+                # Send heartbeat ping every 1.5s
+                if now - last_ping > 1.5:
                     try:
                         self.sock.sendto(b"PING", self.host_addr)
                     except Exception:
@@ -303,139 +327,105 @@ class NetworkRelayClient:
                 pass
 
 
-class LocalSandboxBroker:
-    def __init__(self, dir_a=DIR_A_DEFAULT, dir_b=DIR_B_DEFAULT):
-        self.dir_a = dir_a
-        self.dir_b = dir_b
-        os.makedirs(self.dir_a, exist_ok=True)
-        os.makedirs(self.dir_b, exist_ok=True)
+class DynamicRelayDaemon:
+    """Seamless background daemon. Auto-scans LAN until player clicks Host or Join in-game."""
+    def __init__(self, netdir, port=DEFAULT_PORT):
+        self.netdir = netdir
+        self.port = port
+        os.makedirs(self.netdir, exist_ok=True)
         self.running = True
+        self.discovered_ip = None
+        self.discovered_name = None
 
-    def start(self):
-        print("Gas Station Simulator Co-op Relay running (Direct Local Sandbox Broker)...")
-        file_a_to_b = os.path.join(self.dir_a, "local_player.state")
-        file_b_remote = os.path.join(self.dir_b, "remote_player.state")
-        file_b_to_a = os.path.join(self.dir_b, "local_player.state")
-        file_a_remote = os.path.join(self.dir_a, "remote_player.state")
-
-        events_a = os.path.join(self.dir_a, "events.out")
-        events_b_in = os.path.join(self.dir_b, "events.in")
-        events_b = os.path.join(self.dir_b, "events.out")
-        events_a_in = os.path.join(self.dir_a, "events.in")
-
-        last_a_mtime = 0
-        last_b_mtime = 0
-
-        try:
-            while self.running:
+    def read_role(self):
+        """Reads current role from role.txt or net/role.txt."""
+        for p in ["role.txt", os.path.join(self.netdir, "role.txt"), "Mods/GasStationCoop/role.txt"]:
+            if os.path.exists(p):
                 try:
-                    if os.path.exists(file_a_to_b):
-                        mtime = os.path.getmtime(file_a_to_b)
-                        if mtime != last_a_mtime:
-                            with open(file_a_to_b, "rb") as fa:
-                                data = fa.read()
-                            atomic_write(file_b_remote, data)
-                            last_a_mtime = mtime
-
-                    if os.path.exists(file_b_to_a):
-                        mtime = os.path.getmtime(file_b_to_a)
-                        if mtime != last_b_mtime:
-                            with open(file_b_to_a, "rb") as fb:
-                                data = fb.read()
-                            atomic_write(file_a_remote, data)
-                            last_b_mtime = mtime
-
-                    if os.path.exists(events_a):
-                        with open(events_a, "r") as fa:
-                            evs = fa.read()
-                        os.remove(events_a)
-                        with open(events_b_in, "a") as fb:
-                            fb.write(evs)
-
-                    if os.path.exists(events_b):
-                        with open(events_b, "r") as fb:
-                            evs = fb.read()
-                        os.remove(events_b)
-                        with open(events_a_in, "a") as fa:
-                            fa.write(evs)
+                    with open(p, "r") as f:
+                        r = f.read().strip().lower()
+                    if r in ("host", "guest"):
+                        return r
                 except Exception:
                     pass
+        return None
 
-                time.sleep(0.016)
-        except KeyboardInterrupt:
-            print("\nRelay stopped.")
+    def start(self):
+        print(f"[DAEMON] Gas Station Co-op Background Daemon running on port {self.port}...")
+        write_server_info(self.netdir, "SCANNING", "Scanning LAN for games...", "", self.port)
+
+        last_scan_time = 0
+
+        while self.running:
+            role = self.read_role()
+
+            if role == "host":
+                print("[DAEMON] Role locked to HOST. Launching Host Relay...")
+                relay = NetworkRelayHost(netdir=self.netdir, port=self.port)
+                relay.start()
+                return
+
+            elif role == "guest":
+                target_ip = self.discovered_ip or "127.0.0.1"
+                if os.path.exists("host_ip.txt"):
+                    try:
+                        with open("host_ip.txt", "r") as f:
+                            saved = f.read().strip()
+                        if saved:
+                            target_ip = saved
+                    except Exception:
+                        pass
+
+                print(f"[DAEMON] Role locked to GUEST. Connecting to {target_ip}...")
+                relay = NetworkRelayClient(host_ip=target_ip, netdir=self.netdir, port=self.port, server_name=self.discovered_name)
+                relay.start()
+                return
+
+            # Role is not locked yet — perform non-blocking LAN scan
+            now = time.time()
+            if now - last_scan_time > 1.5:
+                ip, name = NetworkRelayClient.auto_discover_host(timeout=0.6, port=self.port)
+                if ip:
+                    self.discovered_ip = ip
+                    self.discovered_name = name or f"{ip}'s Gas Station"
+                    write_server_info(self.netdir, "ONLINE", self.discovered_name, self.discovered_ip, self.port)
+                else:
+                    self.discovered_ip = None
+                    self.discovered_name = None
+                    write_server_info(self.netdir, "OFFLINE", "No Host Online", "", self.port)
+                last_scan_time = now
+
+            time.sleep(0.2)
 
 
 def main():
     parser = argparse.ArgumentParser(description="Gas Station Simulator Co-op Network Relay")
-    parser.add_argument("--mode", choices=["host", "client", "local", "auto"], default="auto",
-                        help="Relay mode: host, client, local (twin sandboxes), or auto (auto-detect host on LAN)")
+    parser.add_argument("--mode", choices=["host", "client", "auto"], default="auto",
+                        help="Relay mode: host, client, or auto (daemon with in-game selection)")
     parser.add_argument("--connect", default="", help="Host IP to connect to (client mode)")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="UDP port (default: 7777)")
-    parser.add_argument("--netdir", default="", help="Path to local game 'net' directory")
+    parser.add_argument("--netdir", default="net", help="Path to local game 'net' directory")
 
     args = parser.parse_args()
-
-    # Auto-resolve netdir if not specified
-    netdir = args.netdir
-    if not netdir:
-        if os.path.isdir("net"):
-            netdir = os.path.abspath("net")
-        elif os.path.isdir(DIR_A_DEFAULT) and args.mode == "host":
-            netdir = DIR_A_DEFAULT
-        elif os.path.isdir(DIR_B_DEFAULT) and args.mode in ("client", "auto"):
-            netdir = DIR_B_DEFAULT
-        else:
-            netdir = os.path.abspath("net")
+    netdir = os.path.abspath(args.netdir)
+    os.makedirs(netdir, exist_ok=True)
 
     if args.mode == "host":
         relay = NetworkRelayHost(netdir=netdir, port=args.port)
         relay.start()
 
-    elif args.mode in ("client", "auto"):
+    elif args.mode == "client":
         target_ip = args.connect.strip()
-
-        # If no IP provided, perform Minecraft-style LAN Auto-Discovery!
         if not target_ip:
-            discovered = NetworkRelayClient.auto_discover_host(timeout=2.5, port=args.port)
-            if discovered:
-                print(f"\n============================================================")
-                print(f"  ✨ [AUTO-DETECT SUCCESS] Found Host Server at: {discovered}")
-                print(f"  Connecting automatically (Like Minecraft LAN)...")
-                print(f"============================================================\n")
-                target_ip = discovered
-            else:
-                print(f"[AUTO-DETECT] No Host found on local LAN within 2.5 seconds.")
-                # Check saved IP in host_ip.txt
-                saved_ip = ""
-                if os.path.exists("host_ip.txt"):
-                    try:
-                        with open("host_ip.txt", "r") as f:
-                            saved_ip = f.read().strip()
-                    except Exception:
-                        pass
-
-                prompt = f"Enter Host IP [{saved_ip}]: " if saved_ip else "Enter Host IP: "
-                user_input = input(prompt).strip()
-                target_ip = user_input or saved_ip
-
-                if not target_ip:
-                    print("[ERROR] No Host IP provided. Exiting.")
-                    sys.exit(1)
-
-        # Save verified IP
-        try:
-            with open("host_ip.txt", "w") as f:
-                f.write(target_ip)
-        except Exception:
-            pass
-
+            ip, name = NetworkRelayClient.auto_discover_host(timeout=2.0, port=args.port)
+            target_ip = ip or "127.0.0.1"
         relay = NetworkRelayClient(host_ip=target_ip, netdir=netdir, port=args.port)
         relay.start()
 
     else:
-        broker = LocalSandboxBroker()
-        broker.start()
+        # Auto mode: Run Dynamic Daemon
+        daemon = DynamicRelayDaemon(netdir=netdir, port=args.port)
+        daemon.start()
 
 
 if __name__ == "__main__":

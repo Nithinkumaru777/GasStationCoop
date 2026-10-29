@@ -57,7 +57,6 @@ local function DumpWorldState()
         end
         Log("World: " .. World:GetFullName())
 
-        -- Check GameMode
         local AuthGameMode = World.AuthorityGameMode
         if AuthGameMode and AuthGameMode:IsValid() then
             Log("GameMode: " .. AuthGameMode:GetFullName())
@@ -65,7 +64,6 @@ local function DumpWorldState()
             Log("GameMode: nil (Client role or not authority)")
         end
 
-        -- Check NetDriver
         local NetDriver = World.NetDriver
         if NetDriver and NetDriver:IsValid() then
             Log("NetDriver: " .. NetDriver:GetFullName())
@@ -73,7 +71,6 @@ local function DumpWorldState()
             Log("NetDriver: None (Standalone mode)")
         end
 
-        -- Check PlayerControllers
         local PlayerControllers = FindAllOf("PlayerController")
         if PlayerControllers then
             Log(string.format("PlayerControllers count: %d", #PlayerControllers))
@@ -86,7 +83,6 @@ local function DumpWorldState()
             end
         end
 
-        -- Check Character Pawns
         local Characters = FindAllOf("Character")
         if Characters then
             Log(string.format("Characters in world: %d", #Characters))
@@ -111,7 +107,6 @@ local function HostListenServer()
             local MapName = World:GetFullName()
             local match = MapName:match("/Game/[%w_/]+")
             if not match then
-                Log("No /Game/ map path in '" .. MapName .. "'; using current main menu map fallback")
                 match = "/Game/Maps/MenuMap/MainMenu4/Menu_Map4"
             end
             local Cmd = "open " .. match .. "?listen"
@@ -140,66 +135,26 @@ local function JoinServer(ip)
     end)
 end
 
--- UE4SS key binds reach every running copy of the game (playbook/lessons.md #55),
--- so each process must commit to one role before F8/F9 do any network work.
-local Role = nil -- "host" | "guest" once locked
+-- ============================================================
+-- Dynamic Role Management (Minecraft-Style In-Game Selection)
+-- ============================================================
+local Role = nil -- nil until player clicks Host or Join in menu
 
--- Immediate role pre-locking from role.txt or environment
-local envRole = os.getenv("GSS_ROLE") or os.getenv("GAMEPOOL_ROLE")
-if envRole and (envRole == "host" or envRole == "guest") then
-    Role = envRole
-    Log(string.format("Role initialized to '%s' from environment", Role))
-else
-    local fRole = io.open("role.txt", "r") or io.open("Mods/GasStationCoop/role.txt", "r")
-    if fRole then
-        local content = fRole:read("*all")
-        fRole:close()
-        if content then
-            local clean = content:match("^%s*(%a+)%s*$")
-            if clean and (clean == "host" or clean == "guest") then
-                Role = clean
-                Log(string.format("Role initialized to '%s' from role.txt", Role))
-            end
-        end
-    end
-end
-
--- Returns true if this process may act as `wanted` ("host" or "guest"), locking Role on first use.
-local function LockRole(wanted)
-    if Role then
-        if Role ~= wanted then
-            Log(string.format("REFUSED: Process role is already locked to '%s', cannot act as '%s'", Role, wanted))
-            return false
-        end
-        return true
-    end
-
-    -- Check environment variable
-    local envRole = os.getenv("GSS_ROLE") or os.getenv("GAMEPOOL_ROLE")
-    if envRole and (envRole == "host" or envRole == "guest") then
-        Role = envRole
-        Log(string.format("Process role locked to '%s' from environment variable", Role))
-        return Role == wanted
-    end
-
-    -- Check role.txt in binary or mod directory
-    local f = io.open("role.txt", "r") or io.open("Mods/GasStationCoop/role.txt", "r")
-    if f then
-        local content = f:read("*all")
-        f:close()
-        if content then
-            local clean = content:match("^%s*(%a+)%s*$")
-            if clean and (clean == "host" or clean == "guest") then
-                Role = clean
-                Log(string.format("Process role locked to '%s' from role.txt", Role))
-                return Role == wanted
-            end
-        end
-    end
-
-    -- Fallback: lock on first keypress
+local function LockAndSetRole(wanted)
+    if Role == wanted then return true end
     Role = wanted
-    Log(string.format("Process role locked to '%s' on first action", Role))
+    Log(string.format("[ROLE] Process role committed to '%s'!", Role))
+
+    -- Persist to role.txt and net/role.txt so background relay detects it immediately
+    local f1 = io.open("role.txt", "w")
+    if f1 then f1:write(Role .. "\n") f1:close() end
+
+    local f2 = io.open("net/role.txt", "w")
+    if f2 then f2:write(Role .. "\n") f2:close() end
+
+    local f3 = io.open("Mods/GasStationCoop/role.txt", "w")
+    if f3 then f3:write(Role .. "\n") f3:close() end
+
     return true
 end
 
@@ -207,22 +162,10 @@ end
 local function RunSDKDump()
     SafeExec(function()
         Log("=== [STARTING AUTOMATED SDK GENERATION] ===")
-        if GenerateSDK then
-            Log("Generating CXX SDK Headers...")
-            pcall(GenerateSDK)
-        end
-        if DumpAllObjects then
-            Log("Dumping All Loaded UObjects...")
-            pcall(DumpAllObjects)
-        end
-        if GenerateUHTCompatibleHeaders then
-            Log("Generating UHT-compatible Headers...")
-            pcall(GenerateUHTCompatibleHeaders)
-        end
-        if DumpUSMAP then
-            Log("Dumping USMAP mappings...")
-            pcall(DumpUSMAP)
-        end
+        if GenerateSDK then pcall(GenerateSDK) end
+        if DumpAllObjects then pcall(DumpAllObjects) end
+        if GenerateUHTCompatibleHeaders then pcall(GenerateUHTCompatibleHeaders) end
+        if DumpUSMAP then pcall(DumpUSMAP) end
         Log("=== [SDK GENERATION FINISHED] ===")
     end)
 end
@@ -233,10 +176,9 @@ local fDump = io.open(dumpTriggerFile, "r")
 if fDump then
     fDump:close()
     os.remove(dumpTriggerFile)
-    Log("Found run_dump.txt trigger; scheduling SDK generation in 3 seconds...")
     LoopAsync(3000, function()
         RunSDKDump()
-        return true -- stop loop
+        return true
     end)
 end
 
@@ -250,11 +192,8 @@ local function MonitorNetwork()
             local NetDriver = World.NetDriver
             local ndName = (NetDriver and NetDriver:IsValid() and NetDriver:GetFullName()) or "None"
             Log(string.format("[STATUS] Role: %s | NetDriver: %s | PlayerControllers: %d", tostring(Role), ndName, #PCs))
-            if #PCs > 1 then
-                Log(string.format("[NETWORKING SPIKE PASS] Multi-instance connection confirmed! %d PlayerControllers present in world!", #PCs))
-            end
         end)
-        return false -- keep looping
+        return false
     end)
 end
 MonitorNetwork()
@@ -337,7 +276,6 @@ local function DriveRemotePuppet()
                         PuppetActor = newActors[#newActors]
                         Log("Adopted remote puppet: " .. PuppetActor:GetFullName())
 
-                        -- Dress puppet with local player mesh & scale
                         local localPlayer = GetLocalPlayer()
                         if localPlayer and localPlayer:IsValid() and localPlayer.Mesh and localPlayer.Mesh:IsValid() then
                             local skMesh = localPlayer.Mesh.SkeletalMesh
@@ -368,7 +306,6 @@ end
 -- Client-Side Simulation Suppression
 local function ApplyGuestSuppression()
     if Role == "guest" then
-        Log("Role is GUEST: Suppressing autonomous client spawners & saving...")
         local aiManagers = FindAllOf("GSSAIManager_BP_C") or FindAllOf("AIManager") or {}
         for _, mgr in ipairs(aiManagers) do
             if mgr:IsValid() then
@@ -381,8 +318,6 @@ end
 -- ============================================================
 -- Phase 6: Subsystem Synchronization Layer
 -- ============================================================
-
--- Event Communication Layer
 local function SendEvent(eventLine)
     local f = io.open("net/events.out", "a")
     if f then
@@ -431,15 +366,6 @@ local function HandleCoopEvent(cmd, args)
         elseif cmd == "FUEL_DONE" then
             local diff = tonumber(args) or 0.0
             Log(string.format("Remote player finished fueling with diff %.2f", diff))
-            if Role == "host" then
-                local stations = FindAllOf("FuelStation_Bp_C") or FindAllOf("FuelStation") or {}
-                for _, st in ipairs(stations) do
-                    if st:IsValid() then
-                        Log("Host completing station fueling: " .. st:GetFullName())
-                        break
-                    end
-                end
-            end
 
         elseif cmd == "TRASH_PICKUP" then
             local x, y, z = args:match("([%d.-]+)%s+([%d.-]+)%s+([%d.-]+)")
@@ -482,7 +408,6 @@ local function ProcessIncomingEvents()
     f:close()
     if not content or content == "" then return end
 
-    -- Truncate after reading
     f = io.open("net/events.in", "w")
     if f then f:close() end
 
@@ -513,9 +438,8 @@ local function SyncEconomyLoop()
     end
 end
 
--- Register Game Event Hooks (Safe pcalls in case types differ in early builds)
+-- Game Event Hooks
 pcall(function()
-    -- Hook Fueling Minigame Completion
     RegisterHook("/Game/Blueprints/Widgets/MiniGames/FuelMiniGame.FuelMiniGame_C:FuelFinished_AchievementEvent", function(self, TargetDifference)
         local diff = 0.0
         pcall(function() diff = TargetDifference:get() end)
@@ -525,7 +449,6 @@ pcall(function()
 end)
 
 pcall(function()
-    -- Hook Trash Pickup
     RegisterHook("/Game/Blueprints/Buildings/Trash/00_TrashItem.00_TrashItem_C:SimpleInteraction", function(self, Pawn, Comp)
         SafeExec(function()
             local item = self:get()
@@ -541,7 +464,6 @@ pcall(function()
 end)
 
 pcall(function()
-    -- Hook Cash Register Interaction
     RegisterHook("/Script/GSS2.CashShop:OnInteraction", function(self, Instigator)
         if RemoteRegisterLocked then
             Log("WARNING: Cash Register is currently in use by co-op partner!")
@@ -554,7 +476,7 @@ LoopAsync(33, function()
     SyncLocalPlayerState()
     DriveRemotePuppet()
     ProcessIncomingEvents()
-    return false -- keep looping
+    return false
 end)
 
 LoopAsync(1000, function()
@@ -567,57 +489,10 @@ LoopAsync(3000, function()
     return false
 end)
 
--- Check for automated triggers
-local fHost = io.open("auto_host.txt", "r")
-if fHost then
-    fHost:close()
-    os.remove("auto_host.txt")
-    Log("Found auto_host.txt trigger; hosting listen server in 4 seconds...")
-    LoopAsync(4000, function()
-        if LockRole("host") then HostListenServer() end
-        return true
-    end)
-end
-
-local fJoin = io.open("auto_join.txt", "r")
-if fJoin then
-    fJoin:close()
-    os.remove("auto_join.txt")
-    Log("Found auto_join.txt trigger; connecting to 127.0.0.1:7777 in 6 seconds...")
-    LoopAsync(6000, function()
-        if LockRole("guest") then JoinServer("127.0.0.1:7777") end
-        return true
-    end)
-end
-
--- Hook Player Spawn
-NotifyOnNewObject("/Game/Blueprints/PlayerCharacter_BP.PlayerCharacter_BP_C", function(Character)
-    SafeExec(function()
-        Log(string.format("PlayerCharacter spawned: %s! Co-op tracking active.", Character:GetFullName()))
-    end)
-end)
-
--- Register Keybinds
-RegisterKeyBind(Key.F6, function()
-    RunSDKDump()
-end)
-
-RegisterKeyBind(Key.F7, function()
-    DumpWorldState()
-end)
-
-RegisterKeyBind(Key.F8, function()
-    if LockRole("guest") then JoinServer("127.0.0.1:7777") end
-end)
-
-RegisterKeyBind(Key.F9, function()
-    if LockRole("host") then HostListenServer() end
-end)
-
 -- ============================================================
 -- In-Game Co-op Server Browser & Main Menu Integration
 -- ============================================================
-local DiscoveredServerName = "Searching for Server..."
+local DiscoveredServerName = "Scanning for LAN Server..."
 local DiscoveredServerIP = ""
 local ServerStatus = "OFFLINE"
 local RelayLaunched = false
@@ -643,13 +518,8 @@ local function EnsureBackgroundRelay()
     RelayLaunched = true
     SafeExec(function()
         os.execute("cmd /c if not exist net mkdir net")
-        if Role == "host" then
-            Log("[IN-GAME] Launching Host Relay Server in background...")
-            os.execute('start /b python "gss_relay.py" --mode host --port 7777 --netdir "net"')
-        else
-            Log("[IN-GAME] Launching Auto-Discovery Client Relay in background...")
-            os.execute('start /b python "gss_relay.py" --mode auto --port 7777 --netdir "net"')
-        end
+        Log("[IN-GAME] Starting background Co-op LAN Daemon...")
+        os.execute('start /b python "gss_relay.py" --mode auto --port 7777 --netdir "net"')
     end)
 end
 
@@ -663,20 +533,26 @@ local function UpdateMainMenuUI()
             local btn = menu.DLCButton
             pcall(function()
                 if Role == "host" then
-                    btn.Text = "CO-OP: " .. DiscoveredServerName
+                    btn.Text = "CO-OP SERVER (HOSTING)"
                     if btn.ButtonText and btn.ButtonText:IsValid() then
                         btn.ButtonText:SetText("CO-OP SERVER (HOSTING)")
                     end
+                elseif Role == "guest" then
+                    btn.Text = "CO-OP (CONNECTED)"
+                    if btn.ButtonText and btn.ButtonText:IsValid() then
+                        btn.ButtonText:SetText("CO-OP (CONNECTED)")
+                    end
                 else
+                    -- Dynamic Minecraft-Style Selection
                     if ServerStatus == "ONLINE" and DiscoveredServerIP ~= "" then
-                        btn.Text = "JOIN: " .. DiscoveredServerName
+                        btn.Text = "JOIN: " .. DiscoveredServerName:upper()
                         if btn.ButtonText and btn.ButtonText:IsValid() then
                             btn.ButtonText:SetText("JOIN: " .. DiscoveredServerName:upper())
                         end
                     else
-                        btn.Text = "SEARCHING CO-OP..."
+                        btn.Text = "HOST CO-OP GAME"
                         if btn.ButtonText and btn.ButtonText:IsValid() then
-                            btn.ButtonText:SetText("SEARCHING CO-OP...")
+                            btn.ButtonText:SetText("HOST CO-OP GAME")
                         end
                     end
                 end
@@ -693,12 +569,14 @@ local function UpdateMainMenuUI()
             local banner = ""
             local color = {R = 0.0, G = 1.0, B = 0.5, A = 1.0}
             if Role == "host" then
-                banner = string.format("[CO-OP HOST] Server Active: '%s' | LAN Auto-Discovery ON", DiscoveredServerName)
+                banner = "[CO-OP HOST] Server Active! Friends can detect and join your Gas Station now."
+            elseif Role == "guest" then
+                banner = string.format("[CO-OP GUEST] Connected to '%s' (%s:7777)! Enjoy Co-op!", DiscoveredServerName, DiscoveredServerIP)
             elseif ServerStatus == "ONLINE" and DiscoveredServerIP ~= "" then
-                banner = string.format("✨ [CO-OP SERVER DETECTED] '%s' (%s:7777) | Click [JOIN] or Start Game!", DiscoveredServerName, DiscoveredServerIP)
+                banner = string.format("✨ [LAN GAME FOUND] '%s' (%s:7777) | Click [JOIN] in menu, or press [F9] to Host!", DiscoveredServerName, DiscoveredServerIP)
             else
-                banner = "[CO-OP] Auto-detecting Host on LAN... (Make sure Host started server)"
-                color = {R = 1.0, G = 0.8, B = 0.2, A = 1.0}
+                banner = "[CO-OP BROWSER] Scanning LAN for games... Click [HOST CO-OP GAME] to host your station for friends! (F9=Host, F8=Join)"
+                color = {R = 1.0, G = 0.85, B = 0.2, A = 1.0}
             end
             pcall(function()
                 Kismet:PrintString(World, banner, true, false, color, 1.8)
@@ -707,36 +585,89 @@ local function UpdateMainMenuUI()
     end
 end
 
--- Hook Main Menu DLC Button Click to trigger Co-op Join
+-- Host Game Action
+local function ExecuteHostGame(menu)
+    Log("[IN-GAME] Hosting Co-op Server! Loading Gas Station...")
+    LockAndSetRole("host")
+    HostListenServer()
+    if menu and menu:IsValid() then
+        if menu.ContinueButton and menu.ContinueButton:IsValid() and menu.bCanBeLoaded then
+            menu:BndEvt__ContinueButton_K2Node_ComponentBoundEvent_1_OnClicked__DelegateSignature()
+        else
+            menu:StartNewGame()
+        end
+    end
+end
+
+-- Join Game Action
+local function ExecuteJoinGame(menu, ip)
+    local target = ip or DiscoveredServerIP or "127.0.0.1:7777"
+    Log(string.format("[IN-GAME] Joining server '%s' (%s)...", DiscoveredServerName, target))
+    LockAndSetRole("guest")
+    JoinServer(target)
+    if menu and menu:IsValid() then
+        if menu.ContinueButton and menu.ContinueButton:IsValid() and menu.bCanBeLoaded then
+            menu:BndEvt__ContinueButton_K2Node_ComponentBoundEvent_1_OnClicked__DelegateSignature()
+        else
+            menu:StartNewGame()
+        end
+    end
+end
+
+-- Hook Main Menu DLC Button Click to trigger Host or Join
 pcall(function()
     RegisterHook("/Game/Blueprints/Widgets/MainMenu/MainMenuOverviewWidgetBP.MainMenuOverviewWidgetBP_C:BndEvt__MainMenuOverviewWidgetBP_DLCButton_K2Node_ComponentBoundEvent_3_OnClicked__DelegateSignature", function(self)
         SafeExec(function()
             local menu = self:get()
-            Log("[IN-GAME MENU] Co-op Button clicked!")
-            if Role == "guest" then
-                Log(string.format("[IN-GAME] Joining server '%s' (%s)...", DiscoveredServerName, DiscoveredServerIP))
+            ReadServerInfo()
+
+            if Role == "host" or Role == "guest" then
+                -- Already committed, continue into station
                 if menu.ContinueButton and menu.ContinueButton:IsValid() and menu.bCanBeLoaded then
                     menu:BndEvt__ContinueButton_K2Node_ComponentBoundEvent_1_OnClicked__DelegateSignature()
                 else
                     menu:StartNewGame()
                 end
+                return
+            end
+
+            -- If an online server is detected, clicking JOIN joins that server!
+            if ServerStatus == "ONLINE" and DiscoveredServerIP ~= "" then
+                ExecuteJoinGame(menu, DiscoveredServerIP)
             else
-                Log("[IN-GAME] Hosting Co-op Server! Loading station...")
-                if menu.ContinueButton and menu.ContinueButton:IsValid() and menu.bCanBeLoaded then
-                    menu:BndEvt__ContinueButton_K2Node_ComponentBoundEvent_1_OnClicked__DelegateSignature()
-                else
-                    menu:StartNewGame()
-                end
+                -- Otherwise, clicking HOST starts hosting your station!
+                ExecuteHostGame(menu)
             end
         end)
     end)
+end)
+
+-- Register Keybinds (F9 = Host, F8 = Join Server)
+RegisterKeyBind(Key.F6, function()
+    RunSDKDump()
+end)
+
+RegisterKeyBind(Key.F7, function()
+    DumpWorldState()
+end)
+
+RegisterKeyBind(Key.F8, function()
+    local menus = FindAllOf("MainMenuOverviewWidgetBP_C") or {}
+    local menu = (#menus > 0 and menus[1]:IsValid()) and menus[1] or nil
+    ExecuteJoinGame(menu, DiscoveredServerIP)
+end)
+
+RegisterKeyBind(Key.F9, function()
+    local menus = FindAllOf("MainMenuOverviewWidgetBP_C") or {}
+    local menu = (#menus > 0 and menus[1]:IsValid()) and menus[1] or nil
+    ExecuteHostGame(menu)
 end)
 
 -- Auto-start background relay and monitor menu every 1.5s
 LoopAsync(1500, function()
     EnsureBackgroundRelay()
     UpdateMainMenuUI()
-    return false -- keep looping
+    return false
 end)
 
 Log("GasStationCoop initialized. In-game Co-op Menu & Server Browser active.")
