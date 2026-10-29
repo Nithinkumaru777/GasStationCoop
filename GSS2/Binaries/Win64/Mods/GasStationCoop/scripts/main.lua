@@ -2,7 +2,6 @@
 -- Game: Gas Station Simulator (UE 4.27.2)
 -- Build: Steam 22000268 / GSS2-Win64-Shipping.exe
 
--- Fix UE4SS UEHelpers bug (global Print vs print)
 if not Print then Print = print end
 
 local ModName = "GasStationCoop"
@@ -36,7 +35,6 @@ local function GetCurrentWorld()
     return nil
 end
 
--- Safely execute operations on Unreal's Game Thread
 local function SafeExec(fn)
     ExecuteInGameThread(function()
         local s, err = pcall(fn)
@@ -46,53 +44,21 @@ local function SafeExec(fn)
     end)
 end
 
--- Dump World, GameMode, Controllers, and Pawns
 local function DumpWorldState()
     SafeExec(function()
         Log("=== [WORLD & PLAYER STATE DUMP] ===")
         local World = GetCurrentWorld()
-        if not World or not World:IsValid() then
-            Log("World is currently INVALID")
-            return
-        end
+        if not World or not World:IsValid() then return end
         Log("World: " .. World:GetFullName())
 
         local AuthGameMode = World.AuthorityGameMode
-        if AuthGameMode and AuthGameMode:IsValid() then
-            Log("GameMode: " .. AuthGameMode:GetFullName())
-        else
-            Log("GameMode: nil (Client role or not authority)")
-        end
+        Log("GameMode: " .. (AuthGameMode and AuthGameMode:IsValid() and AuthGameMode:GetFullName() or "nil"))
 
         local NetDriver = World.NetDriver
-        if NetDriver and NetDriver:IsValid() then
-            Log("NetDriver: " .. NetDriver:GetFullName())
-        else
-            Log("NetDriver: None (Standalone mode)")
-        end
+        Log("NetDriver: " .. (NetDriver and NetDriver:IsValid() and NetDriver:GetFullName() or "None"))
 
-        local PlayerControllers = FindAllOf("PlayerController")
-        if PlayerControllers then
-            Log(string.format("PlayerControllers count: %d", #PlayerControllers))
-            for i, PC in ipairs(PlayerControllers) do
-                if PC:IsValid() then
-                    local Pawn = PC.Pawn
-                    local PawnName = (Pawn and Pawn:IsValid() and Pawn:GetFullName()) or "None"
-                    Log(string.format("  PC[%d]: %s (Pawn: %s)", i, PC:GetFullName(), PawnName))
-                end
-            end
-        end
-
-        local Characters = FindAllOf("Character")
-        if Characters then
-            Log(string.format("Characters in world: %d", #Characters))
-            for i, Char in ipairs(Characters) do
-                if Char:IsValid() then
-                    local Loc = Char:K2_GetActorLocation()
-                    Log(string.format("  Char[%d]: %s @ (X:%.1f, Y:%.1f, Z:%.1f)", i, Char:GetFullName(), Loc.X, Loc.Y, Loc.Z))
-                end
-            end
-        end
+        local PCs = FindAllOf("PlayerController") or {}
+        Log(string.format("PlayerControllers count: %d", #PCs))
         Log("=== [END DUMP] ===")
     end)
 end
@@ -106,14 +72,10 @@ local function HostListenServer()
         if Kismet and Kismet:IsValid() and World and World:IsValid() then
             local MapName = World:GetFullName()
             local match = MapName:match("/Game/[%w_/]+")
-            if not match then
-                match = "/Game/Maps/MenuMap/MainMenu4/Menu_Map4"
-            end
+            if not match then match = "/Game/Maps/MenuMap/MainMenu4/Menu_Map4" end
             local Cmd = "open " .. match .. "?listen"
-            Log("Executing console command: " .. Cmd)
+            Log("Executing: " .. Cmd)
             Kismet:ExecuteConsoleCommand(World, Cmd, nil)
-        else
-            Log("Failed to locate KismetSystemLibrary or valid World")
         end
     end)
 end
@@ -127,23 +89,19 @@ local function JoinServer(ip)
         local World = GetCurrentWorld()
         if Kismet and Kismet:IsValid() and World and World:IsValid() then
             local Cmd = "open " .. target
-            Log("Executing console command: " .. Cmd)
+            Log("Executing: " .. Cmd)
             Kismet:ExecuteConsoleCommand(World, Cmd, nil)
-        else
-            Log("Failed to locate KismetSystemLibrary or valid World")
         end
     end)
 end
 
--- ============================================================
--- Dynamic Role Management (2 Options: Host World / Join World)
--- ============================================================
-local Role = nil -- nil until player selects Host or Join
+-- Role Management
+local Role = nil
 
 local function LockAndSetRole(wanted)
     if Role == wanted then return true end
     Role = wanted
-    Log(string.format("[ROLE] Process role committed to '%s'!", Role))
+    Log(string.format("[ROLE] Role locked to '%s'", Role))
 
     local f1 = io.open("role.txt", "w")
     if f1 then f1:write(Role .. "\n") f1:close() end
@@ -157,37 +115,17 @@ local function LockAndSetRole(wanted)
     return true
 end
 
--- Automated SDK Dump Runner
+-- SDK Dump
 local function RunSDKDump()
     SafeExec(function()
-        Log("=== [STARTING AUTOMATED SDK GENERATION] ===")
         if GenerateSDK then pcall(GenerateSDK) end
         if DumpAllObjects then pcall(DumpAllObjects) end
         if GenerateUHTCompatibleHeaders then pcall(GenerateUHTCompatibleHeaders) end
         if DumpUSMAP then pcall(DumpUSMAP) end
-        Log("=== [SDK GENERATION FINISHED] ===")
     end)
 end
 
--- Auto Network Monitor
-local function MonitorNetwork()
-    LoopAsync(4000, function()
-        SafeExec(function()
-            local World = GetCurrentWorld()
-            if not World or not World:IsValid() then return false end
-            local PCs = FindAllOf("PlayerController") or {}
-            local NetDriver = World.NetDriver
-            local ndName = (NetDriver and NetDriver:IsValid() and NetDriver:GetFullName()) or "None"
-            Log(string.format("[STATUS] Role: %s | NetDriver: %s | PlayerControllers: %d", tostring(Role), ndName, #PCs))
-        end)
-        return false
-    end)
-end
-MonitorNetwork()
-
--- ============================================================
--- Gas Station Simulator Co-op Puppet & State Sync Engine
--- ============================================================
+-- Puppet & State Sync
 local PuppetActor = nil
 local lastPuppetSpawnAttempt = 0
 
@@ -200,9 +138,7 @@ local function GetLocalPlayer()
     local chars = FindAllOf("PlayerCharacter_BP_C") or FindAllOf("GSSPlayerCharacter") or FindAllOf("Character")
     if not chars or #chars == 0 then return nil end
     for _, c in ipairs(chars) do
-        if c:IsValid() and c ~= PuppetActor then
-            return c
-        end
+        if c:IsValid() and c ~= PuppetActor then return c end
     end
     return nil
 end
@@ -260,8 +196,6 @@ local function DriveRemotePuppet()
                     local newActors = FindAllOf("SkeletalMeshActor") or {}
                     if #newActors > 0 then
                         PuppetActor = newActors[#newActors]
-                        Log("Adopted remote puppet: " .. PuppetActor:GetFullName())
-
                         local localPlayer = GetLocalPlayer()
                         if localPlayer and localPlayer:IsValid() and localPlayer.Mesh and localPlayer.Mesh:IsValid() then
                             local skMesh = localPlayer.Mesh.SkeletalMesh
@@ -269,10 +203,7 @@ local function DriveRemotePuppet()
                                 pcall(function()
                                     PuppetActor.SkeletalMeshComponent:SetSkeletalMesh(skMesh, true)
                                     local scale = localPlayer.Mesh:K2_GetComponentScale()
-                                    if scale then
-                                        PuppetActor.SkeletalMeshComponent:SetWorldScale3D(scale)
-                                    end
-                                    Log("Dressed remote puppet with player mesh: " .. skMesh:GetFullName())
+                                    if scale then PuppetActor.SkeletalMeshComponent:SetWorldScale3D(scale) end
                                 end)
                             end
                         end
@@ -289,27 +220,19 @@ local function DriveRemotePuppet()
     end)
 end
 
--- Client-Side Simulation Suppression
 local function ApplyGuestSuppression()
     if Role == "guest" then
         local aiManagers = FindAllOf("GSSAIManager_BP_C") or FindAllOf("AIManager") or {}
         for _, mgr in ipairs(aiManagers) do
-            if mgr:IsValid() then
-                mgr:SetActorTickEnabled(false)
-            end
+            if mgr:IsValid() then mgr:SetActorTickEnabled(false) end
         end
     end
 end
 
--- ============================================================
--- Phase 6: Subsystem Synchronization Layer
--- ============================================================
+-- Event Sync Layer
 local function SendEvent(eventLine)
     local f = io.open("net/events.out", "a")
-    if f then
-        f:write(eventLine .. "\n")
-        f:close()
-    end
+    if f then f:write(eventLine .. "\n") f:close() end
 end
 
 local RemoteRegisterLocked = false
@@ -326,7 +249,6 @@ local function HandleCoopEvent(cmd, args)
                     local delta = targetMoney - cur
                     if math.abs(delta) >= 0.05 then
                         pcall(function() pc:Cheat_AddMoney(delta) end)
-                        Log(string.format("Synced shared wallet from peer: $%.2f (delta: %+.2f)", targetMoney, delta))
                     end
                 end
             end
@@ -337,21 +259,17 @@ local function HandleCoopEvent(cmd, args)
                 local pc = UEHelpers.GetPlayerController()
                 if pc and pc:IsValid() then
                     pcall(function() pc:Cheat_AddMoney(amount) end)
-                    Log(string.format("Applied client money delta on host authority: %+.2f", amount))
                 end
             end
 
         elseif cmd == "REGISTER_LOCK" then
             RemoteRegisterLocked = true
-            Log("Cash register locked by partner.")
 
         elseif cmd == "REGISTER_UNLOCK" then
             RemoteRegisterLocked = false
-            Log("Cash register unlocked.")
 
         elseif cmd == "FUEL_DONE" then
-            local diff = tonumber(args) or 0.0
-            Log(string.format("Remote player finished fueling with diff %.2f", diff))
+            Log(string.format("Partner completed fueling: %s", tostring(args)))
 
         elseif cmd == "TRASH_PICKUP" then
             local x, y, z = args:match("([%d.-]+)%s+([%d.-]+)%s+([%d.-]+)")
@@ -365,9 +283,7 @@ local function HandleCoopEvent(cmd, args)
                             local dx = loc.X - x
                             local dy = loc.Y - y
                             local dz = loc.Z - z
-                            local distSq = dx*dx + dy*dy + dz*dz
-                            if distSq < (250.0 * 250.0) then
-                                Log("Destroying synced trash item: " .. item:GetFullName())
+                            if (dx*dx + dy*dy + dz*dz) < (250.0 * 250.0) then
                                 pcall(function() item:K2_DestroyActor() end)
                                 break
                             end
@@ -381,7 +297,6 @@ local function HandleCoopEvent(cmd, args)
             local worlds = FindAllOf("GSSGameState_BP_C") or FindAllOf("GSSGameState") or {}
             if #worlds > 0 and worlds[1]:IsValid() then
                 pcall(function() worlds[1]:CloseOpenGasStation(isOpen) end)
-                Log("Synced Gas Station Open state: " .. tostring(isOpen))
             end
         end
     end)
@@ -399,13 +314,11 @@ local function ProcessIncomingEvents()
 
     for line in content:gmatch("[^\r\n]+") do
         local cmd, rest = line:match("^(%S+)%s*(.*)$")
-        if cmd then
-            HandleCoopEvent(cmd, rest)
-        end
+        if cmd then HandleCoopEvent(cmd, rest) end
     end
 end
 
--- 1 Hz Host Economy & Wallet Monitor
+-- 1 Hz Host Economy Sync
 local function SyncEconomyLoop()
     if Role == "host" and UEHelpers and UEHelpers.GetPlayerController then
         SafeExec(function()
@@ -424,13 +337,12 @@ local function SyncEconomyLoop()
     end
 end
 
--- Game Event Hooks
+-- Game Hooks
 pcall(function()
     RegisterHook("/Game/Blueprints/Widgets/MiniGames/FuelMiniGame.FuelMiniGame_C:FuelFinished_AchievementEvent", function(self, TargetDifference)
         local diff = 0.0
         pcall(function() diff = TargetDifference:get() end)
         SendEvent(string.format("FUEL_DONE %.2f", diff))
-        Log(string.format("Local player finished fueling (TargetDifference: %.2f)", diff))
     end)
 end)
 
@@ -440,10 +352,7 @@ pcall(function()
             local item = self:get()
             if item and item:IsValid() then
                 local loc = item:K2_GetActorLocation()
-                if loc then
-                    SendEvent(string.format("TRASH_PICKUP %.1f %.1f %.1f", loc.X, loc.Y, loc.Z))
-                    Log(string.format("Local player picked up trash @ (%.1f, %.1f, %.1f)", loc.X, loc.Y, loc.Z))
-                end
+                if loc then SendEvent(string.format("TRASH_PICKUP %.1f %.1f %.1f", loc.X, loc.Y, loc.Z)) end
             end
         end)
     end)
@@ -451,13 +360,11 @@ end)
 
 pcall(function()
     RegisterHook("/Script/GSS2.CashShop:OnInteraction", function(self, Instigator)
-        if RemoteRegisterLocked then
-            Log("WARNING: Cash Register is currently in use by co-op partner!")
-        end
+        if RemoteRegisterLocked then Log("WARNING: Cash register locked by partner!") end
     end)
 end)
 
--- 30 Hz Sync Loop
+-- Loops
 LoopAsync(33, function()
     SyncLocalPlayerState()
     DriveRemotePuppet()
@@ -476,70 +383,22 @@ LoopAsync(3000, function()
 end)
 
 -- ============================================================
--- In-Game Co-op Menu Integration (2 Options: Host World / Join World)
+-- Silent Background Relay & Safe On-Screen Co-op UI
 -- ============================================================
-local DiscoveredServerName = "Scanning for LAN Server..."
-local DiscoveredServerIP = ""
-local ServerStatus = "OFFLINE"
 local RelayLaunched = false
 
-local function ReadServerInfo()
-    local f = io.open("net/server_info.txt", "r")
-    if not f then return end
-    local content = f:read("*all")
-    f:close()
-    if not content or content == "" then return end
-
-    for line in content:gmatch("[^\r\n]+") do
-        local k, v = line:match("^([%w_]+)=(.*)$")
-        if k == "SERVER_NAME" then DiscoveredServerName = v end
-        if k == "IP" then DiscoveredServerIP = v end
-        if k == "STATUS" then ServerStatus = v end
-    end
-end
-
--- Launch the relay automatically in background if not already started
 local function EnsureBackgroundRelay()
     if RelayLaunched then return end
     RelayLaunched = true
     SafeExec(function()
         os.execute("cmd /c if not exist net mkdir net")
-        Log("[IN-GAME] Starting background Co-op Relay Daemon...")
-        os.execute('start /b python "gss_relay.py" --mode auto --port 7777 --netdir "net"')
+        -- Use pythonw.exe so ZERO command windows appear on the user's desktop!
+        os.execute('start "" pythonw "gss_relay.py" --mode auto --port 7777 --netdir "net"')
     end)
 end
 
--- Refresh and customize Main Menu
+-- Safe Main Menu Display (NEVER modifies FText directly to prevent crashes)
 local function UpdateMainMenuUI()
-    ReadServerInfo()
-
-    local menus = FindAllOf("MainMenuOverviewWidgetBP_C") or {}
-    for _, menu in ipairs(menus) do
-        if menu:IsValid() and menu.DLCButton and menu.DLCButton:IsValid() then
-            local btn = menu.DLCButton
-            pcall(function()
-                if Role == "host" then
-                    btn.Text = "CO-OP: HOSTING ACTIVE"
-                    if btn.ButtonText and btn.ButtonText:IsValid() then
-                        btn.ButtonText:SetText("CO-OP: HOSTING ACTIVE")
-                    end
-                elseif Role == "guest" then
-                    btn.Text = "CO-OP: CONNECTED"
-                    if btn.ButtonText and btn.ButtonText:IsValid() then
-                        btn.ButtonText:SetText("CO-OP: CONNECTED")
-                    end
-                else
-                    btn.Text = "CO-OP: HOST OR JOIN"
-                    if btn.ButtonText and btn.ButtonText:IsValid() then
-                        btn.ButtonText:SetText("CO-OP: HOST OR JOIN")
-                    end
-                end
-                btn:SetupButtonText()
-            end)
-        end
-    end
-
-    -- Draw Main Menu HUD Banner with both options clearly presented
     local World = GetCurrentWorld()
     if World and World:IsValid() and World:GetFullName():lower():find("menu") then
         local Kismet = StaticFindObject("/Script/Engine.Default__KismetSystemLibrary")
@@ -547,11 +406,11 @@ local function UpdateMainMenuUI()
             local banner = ""
             local color = {R = 0.0, G = 1.0, B = 0.5, A = 1.0}
             if Role == "host" then
-                banner = "[CO-OP HOST ACTIVE] Station hosting on port 7777! Share your IP with friends."
+                banner = "[CO-OP HOST ACTIVE] Server live on port 7777! Share your IP with friends."
             elseif Role == "guest" then
-                banner = string.format("[CO-OP CONNECTED] Synced with Host! Enjoy your desert gas station!", DiscoveredServerName)
+                banner = "[CO-OP CONNECTED] Synced with Host! Co-op Station ready."
             else
-                banner = "⛽ GAS STATION CO-OP:  [1] HOST A WORLD (Press F9)   |   [2] JOIN A WORLD (Press F8)   |   Click 'CO-OP: HOST OR JOIN' to Play!"
+                banner = "GAS STATION CO-OP:  [F9] HOST A WORLD   |   [F8] JOIN A WORLD   |   (or click DLC on menu)"
                 color = {R = 1.0, G = 0.85, B = 0.2, A = 1.0}
             end
             pcall(function()
@@ -563,7 +422,7 @@ end
 
 -- Option 1: Host a World Action
 local function ExecuteHostGame(menu)
-    Log("[IN-GAME] >>> OPTION 1: HOST A WORLD <<< Starting Station Host...")
+    Log("[CO-OP] >>> OPTION 1: HOST A WORLD <<<")
     LockAndSetRole("host")
     HostListenServer()
     if menu and menu:IsValid() then
@@ -575,14 +434,14 @@ local function ExecuteHostGame(menu)
     end
 end
 
--- Option 2: Join a World Action (Supports Different Wi-Fi networks & LAN)
+-- Option 2: Join a World Action
 local function ExecuteJoinGame(menu, promptForIP)
-    Log("[IN-GAME] >>> OPTION 2: JOIN A WORLD <<<")
+    Log("[CO-OP] >>> OPTION 2: JOIN A WORLD <<<")
     local targetIP = "127.0.0.1"
 
     if promptForIP then
-        Log("[IN-GAME] Opening IP Dialog for Different Wi-Fi / VPN / LAN connection...")
-        os.execute('start /wait python "ask_ip.py"')
+        -- Silent GUI dialog with pythonw (no black cmd window)
+        os.execute('start /wait pythonw "ask_ip.py"')
     end
 
     local f = io.open("host_ip.txt", "r") or io.open("net/host_ip.txt", "r")
@@ -592,11 +451,9 @@ local function ExecuteJoinGame(menu, promptForIP)
         if content and content:match("%d+%.%d+%.%d+%.%d+") then
             targetIP = content:match("%d+%.%d+%.%d+%.%d+")
         end
-    elseif DiscoveredServerIP ~= "" then
-        targetIP = DiscoveredServerIP
     end
 
-    Log(string.format("[IN-GAME] Connecting to Host at %s:7777...", targetIP))
+    Log(string.format("[CO-OP] Connecting to Host at %s:7777...", targetIP))
     LockAndSetRole("guest")
     JoinServer(targetIP)
     if menu and menu:IsValid() then
@@ -608,7 +465,7 @@ local function ExecuteJoinGame(menu, promptForIP)
     end
 end
 
--- Hook Main Menu DLC Button Click to open 2-Option Selector Dialog
+-- Hook Main Menu DLC Button Click to open the 2-Option Selector Dialog (SILENT GUI)
 pcall(function()
     RegisterHook("/Game/Blueprints/Widgets/MainMenu/MainMenuOverviewWidgetBP.MainMenuOverviewWidgetBP_C:BndEvt__MainMenuOverviewWidgetBP_DLCButton_K2Node_ComponentBoundEvent_3_OnClicked__DelegateSignature", function(self)
         SafeExec(function()
@@ -623,10 +480,10 @@ pcall(function()
                 return
             end
 
-            Log("[IN-GAME MENU] Co-op Button clicked! Opening Host vs Join 2-Option Menu...")
-            os.execute('start /wait python "coop_menu.py"')
+            Log("[CO-OP] DLC clicked! Opening Host / Join Selector Dialog...")
+            -- Use pythonw so zero black cmd windows appear
+            os.execute('start /wait pythonw "coop_menu.py"')
 
-            -- Check which option was selected
             local chosenRole = nil
             local f = io.open("role.txt", "r") or io.open("net/role.txt", "r")
             if f then
@@ -645,29 +502,24 @@ pcall(function()
 end)
 
 -- Dedicated Hotkeys:
--- F9: OPTION 1 -> HOST A WORLD
+-- F9 = OPTION 1: HOST A WORLD
 RegisterKeyBind(Key.F9, function()
     local menus = FindAllOf("MainMenuOverviewWidgetBP_C") or {}
     local menu = (#menus > 0 and menus[1]:IsValid()) and menus[1] or nil
     ExecuteHostGame(menu)
 end)
 
--- F8: OPTION 2 -> JOIN A WORLD (Pops up IP prompt so you can connect from different Wi-Fi!)
+-- F8 = OPTION 2: JOIN A WORLD (Pops up IP prompt to join from any Wi-Fi)
 RegisterKeyBind(Key.F8, function()
     local menus = FindAllOf("MainMenuOverviewWidgetBP_C") or {}
     local menu = (#menus > 0 and menus[1]:IsValid()) and menus[1] or nil
     ExecuteJoinGame(menu, true)
 end)
 
-RegisterKeyBind(Key.F6, function()
-    RunSDKDump()
-end)
+RegisterKeyBind(Key.F6, function() RunSDKDump() end)
+RegisterKeyBind(Key.F7, function() DumpWorldState() end)
 
-RegisterKeyBind(Key.F7, function()
-    DumpWorldState()
-end)
-
--- Auto-start background relay and monitor menu every 1.5s
+-- Menu update loop
 LoopAsync(1500, function()
     EnsureBackgroundRelay()
     UpdateMainMenuUI()
