@@ -1,6 +1,6 @@
 """Gas Station Simulator Co-op Network Relay & State Broker.
 Runs silently in background with ZERO console clutter.
-Handles UDP state replication, peer handshake, character selection sync, and heartbeat.
+Handles UDP state replication, peer handshake, character selection sync, and multi-subnet broadcast beacons.
 
 Lead Architect & Creator: Nithin Kumar (@Nithinkumaru777)
 Repository: https://github.com/Nithinkumaru777/GasStationCoop
@@ -35,6 +35,19 @@ def get_local_ip():
         return ip
     except Exception:
         return "127.0.0.1"
+
+
+def get_broadcast_targets(port=DEFAULT_PORT):
+    """Calculates all broadcast targets across default, 255.255.255.255, loopback, and local subnets."""
+    targets = [("<broadcast>", port), ("255.255.255.255", port), ("127.0.0.1", port)]
+    try:
+        ip = get_local_ip()
+        parts = ip.split(".")
+        if len(parts) == 4 and not ip.startswith("127."):
+            targets.append((f"{parts[0]}.{parts[1]}.{parts[2]}.255", port))
+    except Exception:
+        pass
+    return targets
 
 
 def get_profile(netdir, default_name="Player", default_char="biker"):
@@ -134,7 +147,6 @@ class NetworkRelayHost:
                 now = time.time()
                 is_connected = self.client_addr is not None and (now - self.last_peer_packet < 5.0)
 
-                # Periodic profile check and sync
                 if now - last_profile_sync > 1.0:
                     local_name, local_char = get_profile(self.netdir, default_name="Nithin", default_char="biker")
                     if self.client_addr:
@@ -145,7 +157,6 @@ class NetworkRelayHost:
                             pass
                     last_profile_sync = now
 
-                # Stream local player position at 20 Hz
                 if is_connected:
                     if os.path.exists(local_state_file):
                         try:
@@ -160,7 +171,6 @@ class NetworkRelayHost:
                         except Exception:
                             pass
 
-                    # Stream game interaction events
                     if os.path.exists(events_out_file):
                         try:
                             with open(events_out_file, "r") as f:
@@ -183,11 +193,12 @@ class NetworkRelayHost:
         beacon_msg = f"GSS_BEACON:{self.port}:{self.server_name}".encode("utf-8")
 
         while self.running:
-            try:
-                beacon_sock.sendto(beacon_msg, ("<broadcast>", self.port))
-            except Exception:
-                pass
-            time.sleep(2.0)
+            for bcast_ip, bcast_port in get_broadcast_targets(self.port):
+                try:
+                    beacon_sock.sendto(beacon_msg, (bcast_ip, bcast_port))
+                except Exception:
+                    pass
+            time.sleep(1.5)
 
     def _recv_loop(self):
         remote_state_file = os.path.join(self.netdir, "remote_player.state")
@@ -208,7 +219,6 @@ class NetworkRelayHost:
                 self.last_peer_packet = time.time()
 
                 if data.startswith(b"HELLO:"):
-                    # Handshake: HELLO:name:char
                     parts = data.decode("utf-8", errors="replace").split(":", 2)
                     if len(parts) >= 2 and parts[1]:
                         self.peer_name = parts[1]
@@ -216,7 +226,6 @@ class NetworkRelayHost:
                         self.peer_char = parts[2]
                     write_peer_state(self.netdir, True, "guest", addr[0], self.peer_name, self.peer_char)
 
-                    # Reply with WELCOME:host_name:host_char
                     loc_name, loc_char = get_profile(self.netdir, default_name="Nithin", default_char="biker")
                     resp = f"WELCOME:{loc_name}:{loc_char}".encode("utf-8")
                     self.sock.sendto(resp, addr)
@@ -288,7 +297,6 @@ class NetworkRelayClient:
             while self.running:
                 now = time.time()
 
-                # Send Handshake HELLO periodically until confirmed connected
                 if not self.connected or (now - last_hello > 2.0):
                     local_name, local_char = get_profile(self.netdir, default_name="Partner", default_char="delivery")
                     hello_pkt = f"HELLO:{local_name}:{local_char}".encode("utf-8")
@@ -298,7 +306,6 @@ class NetworkRelayClient:
                         pass
                     last_hello = now
 
-                # Heartbeat PING
                 if now - last_ping > 1.5:
                     try:
                         self.sock.sendto(b"PING", self.host_addr)
@@ -306,12 +313,10 @@ class NetworkRelayClient:
                         pass
                     last_ping = now
 
-                # Check if host timed out
                 if self.connected and (now - self.last_peer_packet > 5.0):
                     self.connected = False
                     write_peer_state(self.netdir, False, "host", self.host_addr[0], self.peer_name, self.peer_char)
 
-                # Stream local player position at 20 Hz
                 if os.path.exists(local_state_file):
                     try:
                         mtime = os.path.getmtime(local_state_file)
@@ -325,7 +330,6 @@ class NetworkRelayClient:
                     except Exception:
                         pass
 
-                # Stream game interaction events
                 if os.path.exists(events_out_file):
                     try:
                         with open(events_out_file, "r") as f:
@@ -356,7 +360,6 @@ class NetworkRelayClient:
                 self.last_peer_packet = time.time()
 
                 if data.startswith(b"WELCOME:"):
-                    # WELCOME:host_name:host_char
                     parts = data.decode("utf-8", errors="replace").split(":", 2)
                     if len(parts) >= 2 and parts[1]:
                         self.peer_name = parts[1]
@@ -400,7 +403,6 @@ def main():
     parser.add_argument("--netdir", type=str, default="net")
     args = parser.parse_args()
 
-    # PID file locking to prevent duplicate background relays
     pid_file = os.path.join(args.netdir, "relay.pid")
     os.makedirs(args.netdir, exist_ok=True)
     try:
@@ -431,7 +433,6 @@ def main():
         relay = NetworkRelayClient(host_ip=args.connect, netdir=args.netdir, port=args.port)
         relay.start()
     else:
-        # Auto detect based on role.txt
         role = "host"
         for p in ["role.txt", os.path.join(args.netdir, "role.txt")]:
             if os.path.exists(p):

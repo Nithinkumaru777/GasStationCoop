@@ -1,6 +1,6 @@
 """Award-Winning, Next-Gen Co-op Launcher for Gas Station Simulator.
 Built with Edge Chromium Webview2, Ultra-Smooth Async Engine, High-Contrast Cyber Aesthetic,
-Interactive 3D Character Selector, Zero-Freeze Win32 Clipboard, and Auto-Discovery.
+Interactive 3D Character Selector, Continuous Multi-Subnet Auto-Discovery & Zero-Freeze Win32 Clipboard.
 
 Lead Architect & Creator: Nithin Kumar (Nithinkumaru777)
 Repository: https://github.com/Nithinkumaru777/GasStationCoop
@@ -79,14 +79,22 @@ def get_screen_metrics():
     return 2560, 1600
 
 # -------------------------------------------------------------
-# Background Async Network Cache (0ms UI latency)
+# Background Multi-Subnet Continuous Auto-Discovery (0ms UI latency)
 # -------------------------------------------------------------
 CACHED_IPS = ["127.0.0.1"]
 DISCOVERED_HOST = {"found": False, "ip": "", "name": ""}
 
-def _background_network_worker():
+def get_broadcast_targets(port=7777):
+    targets = [("<broadcast>", port), ("255.255.255.255", port), ("127.0.0.1", port)]
+    for ip in CACHED_IPS:
+        parts = ip.split(".")
+        if len(parts) == 4 and not ip.startswith("127."):
+            targets.append((f"{parts[0]}.{parts[1]}.{parts[2]}.255", port))
+    return list(set(targets))
+
+def _continuous_discovery_worker():
     global CACHED_IPS, DISCOVERED_HOST
-    # 1. Primary LAN IP
+    # 1. Resolve network IPs
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
@@ -97,7 +105,6 @@ def _background_network_worker():
     except Exception:
         pass
 
-    # 2. Virtual adapters (Radmin / Tailscale)
     try:
         out = subprocess.check_output("ipconfig", text=True, stderr=subprocess.DEVNULL, creationflags=CREATE_NO_WINDOW)
         for line in out.splitlines():
@@ -108,25 +115,48 @@ def _background_network_worker():
     except Exception:
         pass
 
-    # 3. Quick Host Discovery probe
-    try:
-        ds = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        ds.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        ds.settimeout(0.4)
-        ds.sendto(b"GSS_DISCOVER", ("<broadcast>", 7777))
-        ds.sendto(b"GSS_DISCOVER", ("127.0.0.1", 7777))
-        data, addr = ds.recvfrom(1024)
-        text = data.decode("utf-8", errors="replace")
-        if text.startswith("GSS_OFFER:") or text.startswith("GSS_BEACON:"):
-            parts = text.split(":", 2)
-            name = parts[2] if len(parts) >= 3 else "Friend's Station"
-            DISCOVERED_HOST = {"found": True, "ip": addr[0], "name": name}
-        ds.close()
-    except Exception:
-        pass
+    # 2. Continuous scanning loop (every 1.5s)
+    last_found_time = 0
+    while True:
+        try:
+            ds = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            ds.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            ds.settimeout(0.5)
 
-# Start network detection immediately in background
-threading.Thread(target=_background_network_worker, daemon=True).start()
+            for bcast_ip, bcast_port in get_broadcast_targets(7777):
+                try:
+                    ds.sendto(b"GSS_DISCOVER", (bcast_ip, bcast_port))
+                except Exception:
+                    pass
+
+            start_t = time.time()
+            found_this_cycle = False
+            while time.time() - start_t < 0.5:
+                try:
+                    data, addr = ds.recvfrom(1024)
+                    text = data.decode("utf-8", errors="replace")
+                    if text.startswith("GSS_OFFER:") or text.startswith("GSS_BEACON:"):
+                        parts = text.split(":", 2)
+                        name = parts[2] if len(parts) >= 3 else "Friend's Station"
+                        DISCOVERED_HOST = {"found": True, "ip": addr[0], "name": name}
+                        last_found_time = time.time()
+                        found_this_cycle = True
+                        break
+                except socket.timeout:
+                    break
+                except Exception:
+                    pass
+            ds.close()
+
+            if not found_this_cycle and (time.time() - last_found_time > 6.0):
+                DISCOVERED_HOST = {"found": False, "ip": "", "name": ""}
+
+        except Exception:
+            pass
+
+        time.sleep(1.5)
+
+threading.Thread(target=_continuous_discovery_worker, daemon=True).start()
 
 def find_game_directory():
     cur_dir = os.path.dirname(os.path.abspath(__file__))
@@ -187,7 +217,6 @@ def launch_game_process(role, target_ip="127.0.0.1", character="biker", player_n
     scr_w, scr_h = get_screen_metrics()
     ensure_starter_saves(game_dir)
 
-    # 1. Update role and profile files cleanly
     def safe_write_all(filenames, content):
         for fname in filenames:
             for base in [game_dir, os.path.join(game_dir, "net"), os.path.join(game_dir, "Mods", "GasStationCoop")]:
@@ -208,7 +237,6 @@ def launch_game_process(role, target_ip="127.0.0.1", character="biker", player_n
     if role == "guest":
         safe_write_all(["host_ip.txt"], target_ip)
 
-    # 2. Launch background relay via pythonw
     relay_script = os.path.join(game_dir, "gss_relay.py")
     if not os.path.exists(relay_script):
         cur_dir = os.path.dirname(os.path.abspath(__file__))
@@ -225,7 +253,6 @@ def launch_game_process(role, target_ip="127.0.0.1", character="biker", player_n
             cmd.extend(["--mode", "client", "--connect", target_ip, "--netdir", os.path.join(game_dir, "net")])
         subprocess.Popen(cmd, cwd=game_dir, creationflags=CREATE_NO_WINDOW)
 
-    # 3. Launch game process
     args = [
         exe_path,
         "-borderless",
@@ -342,7 +369,6 @@ HTML_UI = """<!DOCTYPE html>
     -webkit-user-select: none;
   }
 
-  /* Custom Slim Modern Scrollbar */
   ::-webkit-scrollbar { width: 5px; }
   ::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.2); }
   ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 4px; }
@@ -724,18 +750,45 @@ HTML_UI = """<!DOCTYPE html>
     border-color: #fff;
   }
 
-  /* Discovered Host Banner */
+  /* Live Auto-Discovery Scanning Banner */
+  .discovery-status-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: rgba(15, 23, 42, 0.6);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    padding: 6px 10px;
+    margin-bottom: 8px;
+    font-size: 10px;
+    color: var(--text-secondary);
+  }
+
+  .live-dot {
+    width: 7px; height: 7px;
+    background: #10b981;
+    border-radius: 50%;
+    display: inline-block;
+    box-shadow: 0 0 8px #10b981;
+    animation: pulseDot 1.4s infinite alternate;
+  }
+  @keyframes pulseDot {
+    0% { transform: scale(0.85); opacity: 0.6; }
+    100% { transform: scale(1.2); opacity: 1; }
+  }
+
   .discovered-banner {
     display: none;
     align-items: center;
     justify-content: space-between;
-    background: rgba(16, 185, 129, 0.15);
-    border: 1px solid rgba(16, 185, 129, 0.35);
-    border-radius: 8px;
-    padding: 7px 11px;
-    margin-bottom: 8px;
-    font-size: 10.5px;
+    background: rgba(16, 185, 129, 0.18);
+    border: 1px solid rgba(16, 185, 129, 0.5);
+    border-radius: 9px;
+    padding: 8px 12px;
+    margin-bottom: 9px;
+    font-size: 11px;
     color: #34d399;
+    box-shadow: 0 0 15px rgba(16, 185, 129, 0.25);
   }
 
   .discovered-banner.show {
@@ -747,10 +800,16 @@ HTML_UI = """<!DOCTYPE html>
     color: #000;
     border: none;
     border-radius: 6px;
-    padding: 4px 9px;
-    font-size: 10px;
+    padding: 5px 11px;
+    font-size: 10.5px;
     font-weight: 800;
     cursor: pointer;
+    box-shadow: 0 2px 8px rgba(16, 185, 129, 0.4);
+    transition: all 0.2s;
+  }
+  .quick-connect-btn:hover {
+    filter: brightness(1.15);
+    transform: translateY(-1px);
   }
 
   /* Toast Notification */
@@ -906,11 +965,24 @@ HTML_UI = """<!DOCTYPE html>
       <span style="font-size: 10px; color: var(--cyan-neon); font-weight: 700;">Direct Connect</span>
     </div>
     <div class="mode-title">JOIN A WORLD</div>
-    <div class="mode-desc">Enter your friend's Host IP address (Works across any Wi-Fi, LAN, or Radmin/Tailscale).</div>
+    <div class="mode-desc">Connect to your friend's station (Auto-detects live LAN servers or paste friend's IP).</div>
 
+    <!-- Live Auto-Discovery Scanning Banner -->
+    <div class="discovery-status-bar" id="scanStatus">
+      <div style="display: flex; align-items: center; gap: 6px;">
+        <span class="live-dot"></span>
+        <span id="scanStatusText">Auto-Scanning Wi-Fi & LAN for active Hosts...</span>
+      </div>
+      <span style="font-size: 9px; opacity: 0.7;">UDP 7777</span>
+    </div>
+
+    <!-- Discovered Host Banner -->
     <div class="discovered-banner" id="discBanner">
-      <span>Found local station: <strong id="discName">Friend</strong></span>
-      <button class="quick-connect-btn" onclick="connectToDiscoveredHost()">Quick Connect</button>
+      <div>
+        <span style="font-weight: 700; color: #fff;">🟢 Station Found:</span>
+        <span id="discName" style="margin-left: 4px; font-weight: 600;">Host (192.168.x.x)</span>
+      </div>
+      <button class="quick-connect-btn" onclick="connectToDiscoveredHost()">⚡ Quick Connect</button>
     </div>
 
     <div class="ip-input-container">
@@ -975,7 +1047,6 @@ HTML_UI = """<!DOCTYPE html>
       }
     } catch (_) {}
 
-    // Fallback to pywebview API
     if (window.pywebview && pywebview.api && pywebview.api.read_clipboard) {
       pywebview.api.read_clipboard().then(txt => {
         if (txt && txt.trim()) {
@@ -1029,17 +1100,26 @@ HTML_UI = """<!DOCTYPE html>
     }
   });
 
-  window.addEventListener('pywebviewready', () => {
-    if (pywebview.api && pywebview.api.check_for_host) {
+  function pollHostDiscovery() {
+    if (window.pywebview && pywebview.api && pywebview.api.check_for_host) {
       pywebview.api.check_for_host().then(res => {
         if (res && res.found) {
           discoveredIp = res.ip;
           document.getElementById('discName').innerText = (res.name || 'Friend') + ' (' + res.ip + ')';
           document.getElementById('discBanner').classList.add('show');
-          document.getElementById('hostIpInput').value = res.ip;
+          document.getElementById('scanStatus').style.display = 'none';
+          if (!document.getElementById('hostIpInput').value.trim()) {
+            document.getElementById('hostIpInput').value = res.ip;
+          }
         }
       });
     }
+  }
+
+  window.addEventListener('pywebviewready', () => {
+    pollHostDiscovery();
+    // Continuous polling every 1.5 seconds!
+    setInterval(pollHostDiscovery, 1500);
   });
 </script>
 </body>
