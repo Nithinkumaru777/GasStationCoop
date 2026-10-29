@@ -3,17 +3,33 @@ Runs with ZERO console windows.
 Presents two clear options:
 1. HOST A WORLD (Start station, copy IP to clipboard, launch game)
 2. JOIN A WORLD (Enter friend's IP, launch game, connect from any Wi-Fi)
+
+Configured for native resolution, smooth 180Hz borderless display,
+full touchpad gesture support (3-finger minimize), and crisp Win+G Game Bar.
 """
 import os
 import sys
 import socket
 import subprocess
+import ctypes
 
 DIR_A = r"D:\coop-sandbox\gss\A\GSS2\Binaries\Win64"
 EXE_PATH = os.path.join(DIR_A, "GSS2-Win64-Shipping.exe")
 USER_DIR = r"D:\coop-sandbox\gss\userA"
 
 CREATE_NO_WINDOW = 0x08000000
+
+def get_screen_metrics():
+    try:
+        user32 = ctypes.windll.user32
+        user32.SetProcessDPIAware()
+        w = user32.GetSystemMetrics(0)
+        h = user32.GetSystemMetrics(1)
+        if w > 0 and h > 0:
+            return w, h
+    except Exception:
+        pass
+    return 2560, 1600
 
 def get_network_ips():
     ips = []
@@ -41,8 +57,73 @@ def get_network_ips():
 
     return ips if ips else ["127.0.0.1"]
 
+def ensure_optimal_game_settings(w, h):
+    ini_path = os.path.join(USER_DIR, "Saved__coopA", "Config", "WindowsNoEditor", "GameUserSettings.ini")
+    try:
+        os.makedirs(os.path.dirname(ini_path), exist_ok=True)
+        content = f"""[/Script/Engine.GameUserSettings]
+FullscreenMode=1
+LastConfirmedFullscreenMode=1
+PreferredFullscreenMode=1
+ResolutionSizeX={w}
+ResolutionSizeY={h}
+LastUserConfirmedResolutionSizeX={w}
+LastUserConfirmedResolutionSizeY={h}
+DesiredScreenWidth={w}
+DesiredScreenHeight={h}
+LastUserConfirmedDesiredScreenWidth={w}
+LastUserConfirmedDesiredScreenHeight={h}
+FrameRateLimit=180.000000
+bUseVSync=False
+bUseDynamicResolution=False
+Version=5
+AudioQualityLevel=0
+LastConfirmedAudioQualityLevel=0
+bUseDesiredScreenHeight=False
+Brightness=2.200000
+MonitorIndex=0
+ScalabilityOverall=3
+SSGI=1
+InvertLookX=False
+InvertLookY=False
+CameraSpeedMultiplierX=1.000000
+CameraSpeedMultiplierY=1.000000
+Rumble=False
+ToogleSprintMode=False
+ToggleInspectMode=False
+BenchmarkAlreadyRan=1.000000
+
+[ScalabilityGroups]
+sg.ResolutionQuality=100.000000
+sg.ViewDistanceQuality=3
+sg.AntiAliasingQuality=3
+sg.ShadowQuality=3
+sg.PostProcessQuality=3
+sg.TextureQuality=3
+sg.EffectsQuality=3
+sg.FoliageQuality=3
+sg.ShadingQuality=3
+
+[/Script/Engine.RendererSettings]
+MotionBlurEnabled=False
+LensFlaresEnabled=True
+SSREnabled=True
+BloomEnabled=True
+AntiAliasingMethod=2
+AmbientOcclusionEnabled=True
+
+[DefaultInputBindingsVersion]
+DefaultInputBindingsVersion=1.0.0.5
+"""
+        with open(ini_path, "w", encoding="utf-8") as f:
+            f.write(content)
+    except Exception:
+        pass
 
 def launch_game(role, target_ip="127.0.0.1"):
+    scr_w, scr_h = get_screen_metrics()
+    ensure_optimal_game_settings(scr_w, scr_h)
+
     # 1. Update role.txt
     for path in [
         os.path.join(DIR_A, "role.txt"),
@@ -83,9 +164,12 @@ def launch_game(role, target_ip="127.0.0.1"):
             creationflags=CREATE_NO_WINDOW
         )
 
-    # 4. Launch game (native fullscreen, no windowed minimize glitch)
+    # 4. Launch game in native Borderless mode (supports 3-finger swipe minimize, crisp 2560x1600 @ 180Hz)
     args = [
         EXE_PATH,
+        "-borderless",
+        f"-ResX={scr_w}",
+        f"-ResY={scr_h}",
         "-nosplash",
         "-saveddirsuffix=_coopA",
         f'-userdir="{USER_DIR}"'
