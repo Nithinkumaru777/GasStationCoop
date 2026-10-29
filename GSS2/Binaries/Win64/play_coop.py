@@ -1,0 +1,1017 @@
+"""Award-Winning, Next-Gen Co-op Launcher for Gas Station Simulator.
+Built with Edge Chromium Webview2, High-Contrast Cyber/Desert Aesthetic,
+Smooth CSS3 Keyframe Animations, Staggered Reveals & Glassmorphism.
+
+Lead Architect & Creator: Nithin Kumar (Nithinkumaru777)
+Repository: https://github.com/Nithinkumaru777/GasStationCoop
+"""
+
+import os
+import sys
+import socket
+import subprocess
+import ctypes
+import webbrowser
+import webview
+
+DIR_A = r"D:\coop-sandbox\gss\A\GSS2\Binaries\Win64"
+EXE_PATH = os.path.join(DIR_A, "GSS2-Win64-Shipping.exe")
+USER_DIR = r"D:\coop-sandbox\gss\userA"
+
+CREATE_NO_WINDOW = 0x08000000
+
+def get_screen_metrics():
+    try:
+        user32 = ctypes.windll.user32
+        user32.SetProcessDPIAware()
+        w = user32.GetSystemMetrics(0)
+        h = user32.GetSystemMetrics(1)
+        if w > 0 and h > 0:
+            return w, h
+    except Exception:
+        pass
+    return 2560, 1600
+
+def get_network_ips():
+    ips = []
+    # 1. Primary LAN IP
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        primary = s.getsockname()[0]
+        s.close()
+        if primary and not primary.startswith("127."):
+            ips.append(primary)
+    except Exception:
+        pass
+
+    # 2. Radmin VPN / Tailscale / virtual adapter IPs via ipconfig
+    try:
+        out = subprocess.check_output("ipconfig", text=True, stderr=subprocess.DEVNULL, creationflags=CREATE_NO_WINDOW)
+        for line in out.splitlines():
+            if "IPv4" in line:
+                val = line.split(":")[-1].strip()
+                if val and val not in ips and not val.startswith("127."):
+                    ips.append(val)
+    except Exception:
+        pass
+
+    return ips if ips else ["127.0.0.1"]
+
+def ensure_optimal_game_settings(w, h):
+    ini_path = os.path.join(USER_DIR, "Saved__coopA", "Config", "WindowsNoEditor", "GameUserSettings.ini")
+    try:
+        os.makedirs(os.path.dirname(ini_path), exist_ok=True)
+        content = f"""[/Script/Engine.GameUserSettings]
+FullscreenMode=1
+LastConfirmedFullscreenMode=1
+PreferredFullscreenMode=1
+ResolutionSizeX={w}
+ResolutionSizeY={h}
+LastUserConfirmedResolutionSizeX={w}
+LastUserConfirmedResolutionSizeY={h}
+DesiredScreenWidth={w}
+DesiredScreenHeight={h}
+LastUserConfirmedDesiredScreenWidth={w}
+LastUserConfirmedDesiredScreenHeight={h}
+FrameRateLimit=180.000000
+bUseVSync=False
+bUseDynamicResolution=False
+Version=5
+AudioQualityLevel=0
+LastConfirmedAudioQualityLevel=0
+bUseDesiredScreenHeight=False
+Brightness=2.200000
+MonitorIndex=0
+ScalabilityOverall=3
+SSGI=1
+InvertLookX=False
+InvertLookY=False
+CameraSpeedMultiplierX=1.000000
+CameraSpeedMultiplierY=1.000000
+Rumble=False
+ToogleSprintMode=False
+ToggleInspectMode=False
+BenchmarkAlreadyRan=1.000000
+
+[ScalabilityGroups]
+sg.ResolutionQuality=100.000000
+sg.ViewDistanceQuality=3
+sg.AntiAliasingQuality=3
+sg.ShadowQuality=3
+sg.PostProcessQuality=3
+sg.TextureQuality=3
+sg.EffectsQuality=3
+sg.FoliageQuality=3
+sg.ShadingQuality=3
+
+[/Script/Engine.RendererSettings]
+MotionBlurEnabled=False
+LensFlaresEnabled=True
+SSREnabled=True
+BloomEnabled=True
+AntiAliasingMethod=2
+AmbientOcclusionEnabled=True
+
+[DefaultInputBindingsVersion]
+DefaultInputBindingsVersion=1.0.0.5
+"""
+        with open(ini_path, "w", encoding="utf-8") as f:
+            f.write(content)
+    except Exception:
+        pass
+
+def launch_game_process(role, target_ip="127.0.0.1"):
+    scr_w, scr_h = get_screen_metrics()
+    ensure_optimal_game_settings(scr_w, scr_h)
+
+    # 1. Update role.txt
+    for path in [
+        os.path.join(DIR_A, "role.txt"),
+        os.path.join(DIR_A, "net", "role.txt"),
+        os.path.join(DIR_A, "Mods", "GasStationCoop", "role.txt")
+    ]:
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(f"{role}\n")
+        except Exception:
+            pass
+
+    # 2. If client, update host_ip.txt
+    if role == "guest":
+        for path in [
+            os.path.join(DIR_A, "host_ip.txt"),
+            os.path.join(DIR_A, "net", "host_ip.txt")
+        ]:
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(f"{target_ip}\n")
+            except Exception:
+                pass
+
+    # 3. Launch silent background relay via pythonw
+    relay_script = os.path.join(DIR_A, "gss_relay.py")
+    if role == "host":
+        subprocess.Popen(
+            ["pythonw", relay_script, "--mode", "host", "--netdir", os.path.join(DIR_A, "net")],
+            cwd=DIR_A,
+            creationflags=CREATE_NO_WINDOW
+        )
+    else:
+        subprocess.Popen(
+            ["pythonw", relay_script, "--mode", "client", "--connect", target_ip, "--netdir", os.path.join(DIR_A, "net")],
+            cwd=DIR_A,
+            creationflags=CREATE_NO_WINDOW
+        )
+
+    # 4. Launch game in native Borderless mode (2560x1600 @ 180Hz)
+    args = [
+        EXE_PATH,
+        "-borderless",
+        f"-ResX={scr_w}",
+        f"-ResY={scr_h}",
+        "-nosplash",
+        "-saveddirsuffix=_coopA",
+        f'-userdir="{USER_DIR}"'
+    ]
+    subprocess.Popen(args, cwd=DIR_A, creationflags=CREATE_NO_WINDOW)
+
+
+class LauncherApi:
+    def __init__(self, window=None):
+        self.window = window
+
+    def set_window(self, win):
+        self.window = win
+
+    def get_network_info(self):
+        ips = get_network_ips()
+        return {
+            "primary_ip": ips[0] if ips else "127.0.0.1",
+            "all_ips": ips
+        }
+
+    def copy_to_clipboard(self, text):
+        try:
+            subprocess.run(["clip"], input=text.encode("utf-16le"), check=True)
+            return True
+        except Exception:
+            return False
+
+    def read_clipboard(self):
+        try:
+            import tkinter as tk
+            r = tk.Tk()
+            r.withdraw()
+            txt = r.clipboard_get()
+            r.destroy()
+            return txt
+        except Exception:
+            return ""
+
+    def host_world(self):
+        ips = get_network_ips()
+        primary = ips[0]
+        self.copy_to_clipboard(primary)
+
+        # Save to my_ip.txt
+        try:
+            with open(os.path.join(DIR_A, "my_ip.txt"), "w", encoding="utf-8") as f:
+                f.write("\n".join(ips))
+        except Exception:
+            pass
+
+        import threading, time
+        def do_launch():
+            time.sleep(1.8)
+            launch_game_process("host")
+            time.sleep(1.2)
+            if self.window:
+                self.window.destroy()
+
+        threading.Thread(target=do_launch, daemon=True).start()
+        return {"status": "ok", "ip": primary, "all_ips": ips}
+
+    def join_world(self, target_ip):
+        clean_ip = (target_ip or "").strip()
+        if not clean_ip:
+            clean_ip = "127.0.0.1"
+
+        import threading, time
+        def do_launch():
+            time.sleep(1.5)
+            launch_game_process("guest", clean_ip)
+            time.sleep(1.2)
+            if self.window:
+                self.window.destroy()
+
+        threading.Thread(target=do_launch, daemon=True).start()
+        return {"status": "ok", "connecting_to": clean_ip}
+
+    def open_github(self):
+        try:
+            webbrowser.open("https://github.com/Nithinkumaru777/GasStationCoop")
+            return True
+        except Exception:
+            return False
+
+
+HTML_UI = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gas Station Simulator Co-op Launcher</title>
+<style>
+  :root {
+    --bg-base: #060911;
+    --card-surface: rgba(15, 23, 42, 0.75);
+    --card-border: rgba(255, 255, 255, 0.09);
+    --card-hover-border: rgba(255, 255, 255, 0.22);
+    --amber-neon: #f59e0b;
+    --amber-glow: rgba(245, 158, 11, 0.45);
+    --cyan-neon: #06b6d4;
+    --cyan-glow: rgba(6, 182, 212, 0.4);
+    --emerald-neon: #10b981;
+    --emerald-glow: rgba(16, 185, 129, 0.45);
+    --text-primary: #f8fafc;
+    --text-secondary: #94a3b8;
+    --text-accent: #38bdf8;
+  }
+
+  * {
+    margin: 0; padding: 0; box-sizing: border-box;
+    user-select: none; -webkit-user-select: none;
+  }
+
+  body {
+    background: radial-gradient(circle at 50% 0%, #1e1b4b 0%, #090d18 50%, #04060a 100%);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--text-primary);
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    padding: 24px 26px 20px 26px;
+    position: relative;
+    animation: windowEntrance 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  }
+
+  @keyframes windowEntrance {
+    0% { opacity: 0; transform: scale(0.96) translateY(8px); }
+    100% { opacity: 1; transform: scale(1) translateY(0); }
+  }
+
+  .glow-orb-1 {
+    position: absolute; width: 320px; height: 320px;
+    background: radial-gradient(circle, var(--amber-glow) 0%, transparent 70%);
+    top: -100px; right: -80px; filter: blur(60px); opacity: 0.5;
+    pointer-events: none; animation: floatOrb 8s infinite alternate ease-in-out;
+  }
+  .glow-orb-2 {
+    position: absolute; width: 340px; height: 340px;
+    background: radial-gradient(circle, var(--cyan-glow) 0%, transparent 70%);
+    bottom: -90px; left: -90px; filter: blur(65px); opacity: 0.45;
+    pointer-events: none; animation: floatOrb 9s infinite alternate-reverse ease-in-out;
+  }
+  @keyframes floatOrb {
+    0% { transform: translateY(0) scale(1); }
+    100% { transform: translateY(25px) scale(1.12); }
+  }
+
+  .hero-header {
+    text-align: center;
+    position: relative;
+    z-index: 2;
+    margin-bottom: 14px;
+  }
+
+  .route66-badge-container {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 8px;
+    position: relative;
+  }
+
+  .shield-outer {
+    width: 60px; height: 60px;
+    background: linear-gradient(135deg, #1e293b, #0f172a);
+    border: 2px solid var(--amber-neon);
+    border-radius: 18px;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 0 25px var(--amber-glow), inset 0 1px 1px rgba(255, 255, 255, 0.3);
+    animation: pulseBadge 3.5s infinite alternate ease-in-out;
+  }
+  @keyframes pulseBadge {
+    0% { box-shadow: 0 0 15px var(--amber-glow); transform: scale(1); }
+    100% { box-shadow: 0 0 32px var(--amber-glow); transform: scale(1.04); }
+  }
+  .shield-outer svg {
+    width: 32px; height: 32px; fill: var(--amber-neon);
+  }
+
+  .title-glitch {
+    font-size: 23px;
+    font-weight: 900;
+    letter-spacing: 1.5px;
+    line-height: 1.15;
+    text-transform: uppercase;
+    background: linear-gradient(90deg, #ffffff 0%, #fbbf24 40%, #ffffff 80%);
+    background-size: 200% auto;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: shimmerText 5s linear infinite;
+  }
+  @keyframes shimmerText {
+    0% { background-position: 0% center; }
+    100% { background-position: 200% center; }
+  }
+
+  .subtitle-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 4px;
+    padding: 3px 12px;
+    background: rgba(6, 182, 212, 0.12);
+    border: 1px solid rgba(6, 182, 212, 0.35);
+    border-radius: 20px;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 1.5px;
+    color: #38bdf8;
+    text-transform: uppercase;
+  }
+  .pulse-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: #38bdf8; box-shadow: 0 0 8px #38bdf8;
+    animation: blinkDot 1.6s infinite alternate;
+  }
+  @keyframes blinkDot {
+    0% { opacity: 0.3; } 100% { opacity: 1; }
+  }
+
+  /* Developer Card (NITHIN KUMAR) */
+  .dev-attribution-card {
+    position: relative;
+    z-index: 2;
+    background: rgba(15, 23, 42, 0.7);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 14px;
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 14px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    transition: all 0.3s ease;
+  }
+  .dev-attribution-card:hover {
+    border-color: rgba(245, 158, 11, 0.4);
+    box-shadow: 0 8px 28px rgba(245, 158, 11, 0.15);
+  }
+  .dev-info-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .dev-avatar {
+    width: 36px; height: 36px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, #f59e0b, #d97706);
+    color: #000;
+    font-size: 13px;
+    font-weight: 900;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 0 14px var(--amber-glow);
+  }
+  .dev-texts {
+    display: flex;
+    flex-direction: column;
+    text-align: left;
+  }
+  .dev-role-label {
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 1px;
+    color: var(--amber-neon);
+    text-transform: uppercase;
+  }
+  .dev-author-name {
+    font-size: 13px;
+    font-weight: 800;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .dev-handle {
+    font-size: 11px;
+    font-weight: 500;
+    color: #94a3b8;
+  }
+  .verified-badge {
+    width: 14px; height: 14px; fill: #10b981;
+  }
+  .btn-github-link {
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #f1f5f9;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.25s ease;
+  }
+  .btn-github-link:hover {
+    background: #ffffff;
+    color: #0f172a;
+    border-color: #ffffff;
+    box-shadow: 0 0 15px rgba(255, 255, 255, 0.4);
+    transform: translateY(-1px);
+  }
+  .btn-github-link svg {
+    width: 14px; height: 14px; fill: currentColor;
+  }
+
+  /* Action Cards */
+  .cards-wrapper {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    position: relative;
+    z-index: 2;
+  }
+
+  .action-card {
+    background: var(--card-surface);
+    backdrop-filter: blur(14px);
+    border: 1px solid var(--card-border);
+    border-radius: 16px;
+    padding: 15px 18px;
+    cursor: pointer;
+    position: relative;
+    overflow: hidden;
+    transition: all 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  }
+  .action-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+    opacity: 0;
+    transition: opacity 0.3s ease;
+  }
+  .action-card:hover {
+    transform: translateY(-3px) scale(1.008);
+    border-color: var(--card-hover-border);
+    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.5);
+  }
+  .action-card:hover::before { opacity: 1; }
+  .action-card:active { transform: scale(0.985); }
+
+  .action-card.host-card {
+    border-left: 4px solid var(--emerald-neon);
+  }
+  .action-card.host-card:hover {
+    box-shadow: 0 18px 45px rgba(16, 185, 129, 0.2);
+    border-color: rgba(16, 185, 129, 0.6);
+  }
+
+  .action-card.join-card {
+    border-left: 4px solid var(--cyan-neon);
+  }
+  .action-card.join-card:hover {
+    box-shadow: 0 18px 45px rgba(6, 182, 212, 0.2);
+    border-color: rgba(6, 182, 212, 0.6);
+  }
+
+  .card-header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+  }
+  .card-badge {
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 1px;
+    padding: 3px 8px;
+    border-radius: 6px;
+    text-transform: uppercase;
+  }
+  .host-badge {
+    background: rgba(16, 185, 129, 0.15);
+    color: #34d399;
+    border: 1px solid rgba(16, 185, 129, 0.3);
+  }
+  .join-badge {
+    background: rgba(6, 182, 212, 0.15);
+    color: #38bdf8;
+    border: 1px solid rgba(6, 182, 212, 0.3);
+  }
+
+  .card-action-icon {
+    width: 28px; height: 28px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.05);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 900;
+    transition: transform 0.25s ease;
+  }
+  .action-card:hover .card-action-icon {
+    transform: translateX(3px);
+    background: rgba(255, 255, 255, 0.15);
+  }
+
+  .card-main-title {
+    font-size: 17px;
+    font-weight: 800;
+    color: #ffffff;
+    margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .card-desc {
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.4;
+    margin-bottom: 10px;
+  }
+
+  .pills-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .spec-pill {
+    font-size: 10px;
+    font-weight: 600;
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 6px;
+    padding: 2px 7px;
+    color: #cbd5e1;
+  }
+
+  /* Join Drawer */
+  .join-drawer {
+    display: none;
+    background: rgba(11, 17, 30, 0.95);
+    border: 1px solid rgba(6, 182, 212, 0.35);
+    border-radius: 14px;
+    padding: 14px 16px;
+    margin-top: -4px;
+    margin-bottom: 6px;
+    animation: drawerSlide 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  }
+  @keyframes drawerSlide {
+    0% { opacity: 0; transform: translateY(-8px); }
+    100% { opacity: 1; transform: translateY(0); }
+  }
+  .join-drawer.active { display: block; }
+
+  .drawer-label {
+    font-size: 11px;
+    font-weight: 700;
+    color: #38bdf8;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .ip-input-box {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .ip-input {
+    flex: 1;
+    background: rgba(0, 0, 0, 0.55);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 8px;
+    padding: 9px 12px;
+    color: #38bdf8;
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    outline: none;
+    transition: all 0.25s ease;
+  }
+  .ip-input:focus {
+    border-color: var(--cyan-neon);
+    box-shadow: 0 0 12px var(--cyan-glow);
+  }
+  .btn-paste {
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 8px;
+    padding: 0 12px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #cbd5e1;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+  .btn-paste:hover {
+    background: rgba(255, 255, 255, 0.18);
+    color: #fff;
+  }
+  .btn-connect-launch {
+    width: 100%;
+    background: linear-gradient(135deg, #0284c7, #06b6d4);
+    border: none;
+    border-radius: 8px;
+    padding: 10px;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    cursor: pointer;
+    box-shadow: 0 4px 15px rgba(6, 182, 212, 0.35);
+    transition: all 0.25s ease;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+  }
+  .btn-connect-launch:hover {
+    filter: brightness(1.12);
+    box-shadow: 0 6px 20px rgba(6, 182, 212, 0.5);
+    transform: translateY(-1px);
+  }
+
+  .footer-bar {
+    margin-top: auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-top: 10px;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    position: relative;
+    z-index: 2;
+  }
+  .network-pill {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    font-weight: 600;
+    color: #94a3b8;
+  }
+  .net-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: #10b981; box-shadow: 0 0 6px #10b981;
+  }
+  .version-tag {
+    font-size: 10px;
+    font-weight: 700;
+    color: #64748b;
+    letter-spacing: 0.5px;
+  }
+
+  .toast-alert {
+    position: absolute;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%) translateY(70px);
+    background: rgba(15, 23, 42, 0.95);
+    backdrop-filter: blur(14px);
+    border: 1px solid var(--emerald-neon);
+    border-radius: 30px;
+    padding: 10px 20px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    box-shadow: 0 10px 30px var(--emerald-glow);
+    z-index: 99;
+    opacity: 0;
+    pointer-events: none;
+    transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .toast-alert.show {
+    transform: translateX(-50%) translateY(0);
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .toast-icon {
+    width: 18px; height: 18px; fill: var(--emerald-neon);
+  }
+  .toast-text {
+    font-size: 12px;
+    font-weight: 700;
+    color: #ffffff;
+  }
+
+  .launch-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(4, 6, 12, 0.94);
+    backdrop-filter: blur(16px);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.35s ease;
+  }
+  .launch-overlay.active {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .radar-spinner {
+    width: 60px; height: 60px;
+    border: 3px solid rgba(245, 158, 11, 0.2);
+    border-top: 3px solid var(--amber-neon);
+    border-radius: 50%;
+    animation: spinRadar 1s linear infinite;
+    margin-bottom: 18px;
+    box-shadow: 0 0 25px var(--amber-glow);
+  }
+  @keyframes spinRadar {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+  }
+  .overlay-title {
+    font-size: 18px;
+    font-weight: 800;
+    color: #ffffff;
+    margin-bottom: 6px;
+  }
+  .overlay-subtitle {
+    font-size: 12px;
+    color: #94a3b8;
+  }
+</style>
+</head>
+<body>
+
+  <div class="glow-orb-1"></div>
+  <div class="glow-orb-2"></div>
+
+  <div class="hero-header">
+    <div class="route66-badge-container">
+      <div class="shield-outer">
+        <svg viewBox="0 0 24 24">
+          <path d="M12 2L3 6v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V6l-9-4zm-1 14.5l-3.5-3.5 1.41-1.41L11 13.67l5.59-5.59L18 9.5 11 16.5z"/>
+        </svg>
+      </div>
+    </div>
+    <h1 class="title-glitch">Gas Station Co-Op</h1>
+    <div class="subtitle-pill">
+      <div class="pulse-dot"></div>
+      <span>Multiplayer Engine &bull; Route 66</span>
+    </div>
+  </div>
+
+  <!-- Developer Attribution (NITHIN KUMAR) -->
+  <div class="dev-attribution-card">
+    <div class="dev-info-left">
+      <div class="dev-avatar">NK</div>
+      <div class="dev-texts">
+        <span class="dev-role-label">Lead Architect & Creator</span>
+        <div class="dev-author-name">
+          Nithin Kumar
+          <span class="dev-handle">@Nithinkumaru777</span>
+          <svg class="verified-badge" viewBox="0 0 24 24">
+            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+          </svg>
+        </div>
+      </div>
+    </div>
+    <button class="btn-github-link" onclick="openGitHub()">
+      <svg viewBox="0 0 24 24">
+        <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+      </svg>
+      GitHub Repo &rarr;
+    </button>
+  </div>
+
+  <div class="cards-wrapper">
+
+    <!-- Option 1: HOST -->
+    <div class="action-card host-card" onclick="triggerHostAction()">
+      <div class="card-header-row">
+        <span class="card-badge host-badge">Option 1 &bull; Server Mode</span>
+        <div class="card-action-icon">&rarr;</div>
+      </div>
+      <div class="card-main-title">
+        <span>HOST A WORLD</span>
+      </div>
+      <div class="card-desc">
+        Start your station & host multiplayer session. Automatically detects and copies your IP address for friends.
+      </div>
+      <div class="pills-row">
+        <span class="spec-pill">&#9889; Auto-Copies IP</span>
+        <span class="spec-pill">&#127760; Port 7777</span>
+        <span class="spec-pill">&#128187; LAN / Wi-Fi / VPN</span>
+      </div>
+    </div>
+
+    <!-- Option 2: JOIN -->
+    <div class="action-card join-card" onclick="toggleJoinDrawer()">
+      <div class="card-header-row">
+        <span class="card-badge join-badge">Option 2 &bull; Client Mode</span>
+        <div class="card-action-icon" id="joinChevron">&#9662;</div>
+      </div>
+      <div class="card-main-title">
+        <span>JOIN A WORLD</span>
+      </div>
+      <div class="card-desc">
+        Connect to a friend's hosted station from any Wi-Fi, LAN, or Radmin / Tailscale VPN network.
+      </div>
+      <div class="pills-row">
+        <span class="spec-pill">&#128101; 2-Player Co-op</span>
+        <span class="spec-pill">&#128279; Direct Connect</span>
+        <span class="spec-pill">&#9889; Instant Handshake</span>
+      </div>
+    </div>
+
+    <!-- Join Drawer -->
+    <div class="join-drawer" id="joinDrawer">
+      <div class="drawer-label">
+        <svg style="width:14px;height:14px;fill:currentColor;" viewBox="0 0 24 24">
+          <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/>
+        </svg>
+        Target Host IP Address:
+      </div>
+      <div class="ip-input-box">
+        <input type="text" class="ip-input" id="hostIpInput" value="127.0.0.1" placeholder="e.g. 192.168.1.15" spellcheck="false" autocomplete="off">
+        <button class="btn-paste" onclick="pasteFromClipboard(event)">PASTE</button>
+      </div>
+      <button class="btn-connect-launch" onclick="triggerJoinAction(event)">
+        Connect to Station &rarr;
+      </button>
+    </div>
+
+  </div>
+
+  <div class="footer-bar">
+    <div class="network-pill">
+      <div class="net-dot"></div>
+      <span id="networkStatusText">Network: 127.0.0.1 (Ready)</span>
+    </div>
+    <div class="version-tag">GasStationCoop v1.0.0 Pro</div>
+  </div>
+
+  <div class="toast-alert" id="toastAlert">
+    <svg class="toast-icon" viewBox="0 0 24 24">
+      <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+    </svg>
+    <span class="toast-text" id="toastMessage">IP Address Copied to Clipboard!</span>
+  </div>
+
+  <div class="launch-overlay" id="launchOverlay">
+    <div class="radar-spinner"></div>
+    <div class="overlay-title" id="overlayTitle">Initializing Co-op World...</div>
+    <div class="overlay-subtitle" id="overlaySubtitle">Please wait while station connects</div>
+  </div>
+
+<script>
+  let drawerOpen = false;
+
+  function toggleJoinDrawer() {
+    drawerOpen = !drawerOpen;
+    document.getElementById('joinDrawer').classList.toggle('active', drawerOpen);
+    document.getElementById('joinChevron').innerHTML = drawerOpen ? '&#9652;' : '&#9662;';
+    if (drawerOpen) {
+      setTimeout(() => document.getElementById('hostIpInput').focus(), 150);
+    }
+  }
+
+  function showToast(msg) {
+    const toast = document.getElementById('toastAlert');
+    document.getElementById('toastMessage').innerText = msg;
+    toast.classList.add('show');
+    setTimeout(() => {
+      toast.classList.remove('show');
+    }, 3200);
+  }
+
+  function openGitHub() {
+    if (window.pywebview && pywebview.api) {
+      pywebview.api.open_github();
+    } else {
+      window.open('https://github.com/Nithinkumaru777/GasStationCoop', '_blank');
+    }
+  }
+
+  function pasteFromClipboard(e) {
+    e.stopPropagation();
+    if (window.pywebview && pywebview.api && pywebview.api.read_clipboard) {
+      pywebview.api.read_clipboard().then(txt => {
+        if (txt) document.getElementById('hostIpInput').value = txt.trim();
+      });
+    } else {
+      navigator.clipboard.readText().then(text => {
+        if (text) document.getElementById('hostIpInput').value = text.trim();
+      }).catch(() => {});
+    }
+  }
+
+  function triggerHostAction() {
+    if (window.pywebview && pywebview.api) {
+      pywebview.api.host_world().then(res => {
+        showToast('HOST IP COPIED: ' + res.ip + ' (Ready to share!)');
+        setTimeout(() => {
+          document.getElementById('overlayTitle').innerText = 'Starting Co-op Host Server...';
+          document.getElementById('overlaySubtitle').innerText = 'Your Host IP: ' + res.ip + ' (Copied to Clipboard)';
+          document.getElementById('launchOverlay').classList.add('active');
+        }, 500);
+      });
+    }
+  }
+
+  function triggerJoinAction(e) {
+    if (e) e.stopPropagation();
+    const targetIp = document.getElementById('hostIpInput').value.trim() || '127.0.0.1';
+    if (window.pywebview && pywebview.api) {
+      pywebview.api.join_world(targetIp).then(res => {
+        document.getElementById('overlayTitle').innerText = 'Connecting to Co-op Station...';
+        document.getElementById('overlaySubtitle').innerText = 'Target: ' + res.connecting_to + ':7777';
+        document.getElementById('launchOverlay').classList.add('active');
+      });
+    }
+  }
+
+  window.addEventListener('pywebviewready', () => {
+    if (pywebview.api && pywebview.api.get_network_info) {
+      pywebview.api.get_network_info().then(info => {
+        if (info && info.primary_ip) {
+          document.getElementById('networkStatusText').innerText = 'Network: ' + info.primary_ip + ' (Ready)';
+          document.getElementById('hostIpInput').value = info.primary_ip;
+        }
+      });
+    }
+  });
+</script>
+</body>
+</html>
+"""
+
+def main():
+    api = LauncherApi()
+    window = webview.create_window(
+        title="Gas Station Simulator Co-op Launcher",
+        html=HTML_UI,
+        js_api=api,
+        width=520,
+        height=660,
+        resizable=False,
+        background_color="#060911"
+    )
+    api.set_window(window)
+    webview.start()
+
+if __name__ == "__main__":
+    main()
