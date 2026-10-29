@@ -1,11 +1,13 @@
--- Gas Station Simulator Co-op Probe & Sync Layer (UE4SS v3.0.1 Lua Mod)
+-- Gas Station Simulator Co-op Engine & Synchronization Layer
 -- Game: Gas Station Simulator (UE 4.27.2)
 -- Build: Steam 22000268 / GSS2-Win64-Shipping.exe
+-- Lead Architect & Creator: Nithin Kumar (@Nithinkumaru777)
+-- GitHub: https://github.com/Nithinkumaru777/GasStationCoop
 
 if not Print then Print = print end
 
 local ModName = "GasStationCoop"
-print(string.format("[%s] Initializing Co-op Mod Probe for Gas Station Simulator...", ModName))
+print(string.format("[%s] Initializing Co-op Engine v2.0 for Gas Station Simulator...", ModName))
 
 local UEHelpers = nil
 local status, res = pcall(require, "UEHelpers")
@@ -19,6 +21,15 @@ local function Log(msg)
     print(string.format("[%s] %s", ModName, tostring(msg)))
 end
 
+local function SafeExec(fn)
+    ExecuteInGameThread(function()
+        local s, err = pcall(fn)
+        if not s then
+            Log("ERROR: " .. tostring(err))
+        end
+    end)
+end
+
 local function GetCurrentWorld()
     local worlds = FindAllOf("World")
     if worlds and #worlds > 0 then
@@ -29,115 +40,142 @@ local function GetCurrentWorld()
         end
     end
     if UEHelpers and UEHelpers.GetWorld then
-        local status, w = pcall(UEHelpers.GetWorld)
-        if status and w and w:IsValid() then return w end
+        local s, w = pcall(UEHelpers.GetWorld)
+        if s and w and w:IsValid() then return w end
     end
     return nil
 end
-
-local function SafeExec(fn)
-    ExecuteInGameThread(function()
-        local s, err = pcall(fn)
-        if not s then
-            Log("ERROR: " .. tostring(err))
-        end
-    end)
-end
-
-local function DumpWorldState()
-    SafeExec(function()
-        Log("=== [WORLD & PLAYER STATE DUMP] ===")
-        local World = GetCurrentWorld()
-        if not World or not World:IsValid() then return end
-        Log("World: " .. World:GetFullName())
-
-        local AuthGameMode = World.AuthorityGameMode
-        Log("GameMode: " .. (AuthGameMode and AuthGameMode:IsValid() and AuthGameMode:GetFullName() or "nil"))
-
-        local NetDriver = World.NetDriver
-        Log("NetDriver: " .. (NetDriver and NetDriver:IsValid() and NetDriver:GetFullName() or "None"))
-
-        local PCs = FindAllOf("PlayerController") or {}
-        Log(string.format("PlayerControllers count: %d", #PCs))
-        Log("=== [END DUMP] ===")
-    end)
-end
-
--- Network Relay Activation (Background UDP State Broker)
-local function StartHostRelay()
-    SafeExec(function()
-        Log("[CO-OP] Starting host relay on UDP port 7777...")
-        os.execute("cmd /c if not exist net mkdir net")
-        os.execute('start "" pythonw "gss_relay.py" --mode host --port 7777 --netdir "net"')
-    end)
-end
-
-local function StartGuestRelay(targetIP)
-    SafeExec(function()
-        local ip = targetIP or "127.0.0.1"
-        Log(string.format("[CO-OP] Starting client relay connecting to %s:7777...", ip))
-        os.execute("cmd /c if not exist net mkdir net")
-        os.execute(string.format('start "" pythonw "gss_relay.py" --mode client --connect %s --port 7777 --netdir "net"', ip))
-    end)
-end
-
--- Role Management
-local Role = nil
-
-local function ReadSavedRole()
-    local f = io.open("role.txt", "r") or io.open("net/role.txt", "r") or io.open("Mods/GasStationCoop/role.txt", "r")
-    if f then
-        local c = f:read("*all")
-        f:close()
-        if c then
-            local r = c:match("(%a+)")
-            if r and (r == "host" or r == "guest") then
-                Role = r
-                Log(string.format("[ROLE] Pre-selected role loaded: '%s'", Role))
-                return Role
-            end
-        end
-    end
-    return nil
-end
-ReadSavedRole()
-
-local function LockAndSetRole(wanted)
-    if Role == wanted then return true end
-    Role = wanted
-    Log(string.format("[ROLE] Role locked to '%s'", Role))
-
-    local f1 = io.open("role.txt", "w")
-    if f1 then f1:write(Role .. "\n") f1:close() end
-
-    local f2 = io.open("net/role.txt", "w")
-    if f2 then f2:write(Role .. "\n") f2:close() end
-
-    local f3 = io.open("Mods/GasStationCoop/role.txt", "w")
-    if f3 then f3:write(Role .. "\n") f3:close() end
-
-    return true
-end
-
--- SDK Dump
-local function RunSDKDump()
-    SafeExec(function()
-        if GenerateSDK then pcall(GenerateSDK) end
-        if DumpAllObjects then pcall(DumpAllObjects) end
-        if GenerateUHTCompatibleHeaders then pcall(GenerateUHTCompatibleHeaders) end
-        if DumpUSMAP then pcall(DumpUSMAP) end
-    end)
-end
-
--- Puppet & State Sync
-local PuppetActor = nil
-local lastPuppetSpawnAttempt = 0
 
 local function EnsureNetDir()
     os.execute("cmd /c if not exist net mkdir net")
 end
 EnsureNetDir()
 
+-- ============================================================
+-- Profile & Role Management
+-- ============================================================
+local Role = nil
+local LocalName = "Nithin"
+local LocalChar = "biker"
+
+local function ReadLocalProfile()
+    local f_role = io.open("net/role.txt", "r") or io.open("role.txt", "r") or io.open("Mods/GasStationCoop/role.txt", "r")
+    if f_role then
+        local c = f_role:read("*all")
+        f_role:close()
+        if c then
+            local r = c:match("(%a+)")
+            if r and (r == "host" or r == "guest") then
+                Role = r
+            end
+        end
+    end
+
+    local f_name = io.open("net/player_name.txt", "r") or io.open("player_name.txt", "r")
+    if f_name then
+        local c = f_name:read("*line")
+        f_name:close()
+        if c and c:match("%S+") then LocalName = c:match("^%s*(.-)%s*$") end
+    end
+
+    local f_char = io.open("net/character.txt", "r") or io.open("character.txt", "r")
+    if f_char then
+        local c = f_char:read("*line")
+        f_char:close()
+        if c and c:match("%a+") then LocalChar = c:match("(%a+)") end
+    end
+end
+ReadLocalProfile()
+
+local function LockAndSetRole(wanted)
+    if Role == wanted then return true end
+    Role = wanted
+    Log(string.format("[ROLE] Role locked to '%s'", Role))
+
+    local paths = {"net/role.txt", "role.txt", "Mods/GasStationCoop/role.txt"}
+    for _, p in ipairs(paths) do
+        local f = io.open(p, "w")
+        if f then
+            f:write(Role .. "\n")
+            f:close()
+        end
+    end
+    return true
+end
+
+-- ============================================================
+-- Network Relay Activation (Background UDP State Broker)
+-- ============================================================
+local function StartHostRelay()
+    Log("[CO-OP] Starting host relay on UDP port 7777...")
+    EnsureNetDir()
+    os.execute('start "" pythonw "gss_relay.py" --mode host --port 7777 --netdir "net"')
+end
+
+local function StartGuestRelay(targetIP)
+    local ip = targetIP or "127.0.0.1"
+    Log(string.format("[CO-OP] Starting client relay connecting to %s:7777...", ip))
+    EnsureNetDir()
+    local f = io.open("net/host_ip.txt", "w")
+    if f then f:write(ip .. "\n") f:close() end
+    os.execute(string.format('start "" pythonw "gss_relay.py" --mode client --connect %s --port 7777 --netdir "net"', ip))
+end
+
+local RelayLaunched = false
+local function EnsureBackgroundRelay()
+    if RelayLaunched then return end
+    RelayLaunched = true
+    EnsureNetDir()
+    os.execute('start "" pythonw "gss_relay.py" --mode auto --port 7777 --netdir "net"')
+end
+
+-- ============================================================
+-- Peer State & Live Handshake Inspection
+-- ============================================================
+local IsPeerConnected = false
+local RemotePlayerName = "Partner"
+local RemotePlayerRole = "GUEST"
+local RemotePlayerChar = "delivery"
+local LastPeerCheckTime = 0
+
+local function CheckPeerStatus()
+    local now = os.time()
+    if now - LastPeerCheckTime < 1 then return IsPeerConnected end
+    LastPeerCheckTime = now
+
+    local f = io.open("net/peer.state", "r")
+    if not f then
+        IsPeerConnected = false
+        return false
+    end
+
+    local content = f:read("*all")
+    f:close()
+    if not content or content == "" then
+        IsPeerConnected = false
+        return false
+    end
+
+    local connected = content:match("CONNECTED=(%d)")
+    local role = content:match("ROLE=(%a+)")
+    local name = content:match("NAME=([^\r\n]+)")
+    local char_id = content:match("CHAR=(%a+)")
+
+    if connected == "1" then
+        IsPeerConnected = true
+        if role then RemotePlayerRole = role:upper() end
+        if name and name ~= "" then RemotePlayerName = name end
+        if char_id and char_id ~= "" then RemotePlayerChar = char_id end
+    else
+        IsPeerConnected = false
+    end
+
+    return IsPeerConnected
+end
+
+-- ============================================================
+-- World & Player Helpers
+-- ============================================================
 local CachedLocalPlayer = nil
 local function GetLocalPlayer()
     if CachedLocalPlayer and CachedLocalPlayer:IsValid() then
@@ -154,6 +192,170 @@ local function IsInGameplayWorld()
     return name:find("demomapka") ~= nil and GetLocalPlayer() ~= nil
 end
 
+-- ============================================================
+-- Character Archetype Assets & Mesh Paths
+-- ============================================================
+local CharacterMeshes = {
+    biker = {
+        name = "Route 66 Biker",
+        body = "/Game/Assets/Characters/Biker/biker_body_SK.biker_body_SK",
+        head = "/Game/Assets/Characters/Biker/Biker_head_SK.Biker_head_SK",
+        bp = "/Game/Assets/Characters/Blueprints/Biker/Biker_ActorBp.Biker_ActorBp_C"
+    },
+    delivery = {
+        name = "Fuel Delivery Specialist",
+        body = "/Game/Assets/Characters/NewBaseMesh/DeliveryGuys/SK_Ma_GasolineDelivery_T.SK_Ma_GasolineDelivery_T"
+    },
+    worker = {
+        name = "Station Worker",
+        body = "/Game/Assets/Characters/PlayerModularSkeleton/Player_Modular_Base_01.Player_Modular_Base_01"
+    },
+    party = {
+        name = "Route 66 Party Guy",
+        body = "/Game/Assets/Characters/NewBaseMesh/Party/SK_Ma_BusParty_10.SK_Ma_BusParty_10"
+    }
+}
+
+local AnimPaths = {
+    walk = "/Game/Assets/Characters/Animations/NPCs/Movement/Cleaning/IPC/BaseNPC_Walk_F_IP_02.BaseNPC_Walk_F_IP_02",
+    idle = "/Game/Assets/Characters/Animations/NPCs/Movement/Cleaning/IPC/BaseNPC_Standing_Idle_00.BaseNPC_Standing_Idle_00"
+}
+
+-- ============================================================
+-- Crash-Proof Actor Spawner (No Cheat Commands)
+-- ============================================================
+local function SpawnActorFromClass(World, ActorClass, loc, rot)
+    if not World or not World:IsValid() or not ActorClass or not ActorClass:IsValid() then
+        return nil
+    end
+
+    local spawned = nil
+
+    -- 1. Try native UE4SS World:SpawnActor
+    pcall(function()
+        if World.SpawnActor then
+            spawned = World:SpawnActor(ActorClass, loc, rot)
+        end
+    end)
+    if spawned and spawned:IsValid() then return spawned end
+
+    -- 2. Try GameplayStatics BeginSpawningActorFromClass
+    pcall(function()
+        local GPStatics = StaticFindObject("/Script/Engine.Default__GameplayStatics")
+        if GPStatics and GPStatics:IsValid() then
+            local transform = {
+                Rotation = { X = 0.0, Y = 0.0, Z = 0.0, W = 1.0 },
+                Translation = { X = loc.X, Y = loc.Y, Z = loc.Z },
+                Scale3D = { X = 1.0, Y = 1.0, Z = 1.0 }
+            }
+            local actor = GPStatics:BeginSpawningActorFromClass(World, ActorClass, transform, false, nil)
+            if actor and actor:IsValid() then
+                spawned = GPStatics:FinishSpawningActor(actor, transform)
+            end
+        end
+    end)
+
+    return spawned
+end
+
+-- ============================================================
+-- 3D Character Puppet & Floating Name Tag Layer
+-- ============================================================
+local PuppetActor = nil
+local NameTagActor = nil
+local CachedWalkAnim = nil
+local CachedIdleAnim = nil
+local IsPuppetWalking = false
+local LastPuppetX = 0
+local LastPuppetY = 0
+local LastSpawnAttempt = 0
+
+local function SpawnRemotePuppet(World, loc, rot)
+    if not World or not World:IsValid() then return nil end
+
+    CheckPeerStatus()
+    local charKey = RemotePlayerChar or "biker"
+    local charDef = CharacterMeshes[charKey] or CharacterMeshes["biker"]
+    Log(string.format("[CO-OP] Spawning remote puppet for %s [Archetype: %s]...", RemotePlayerName, charDef.name))
+
+    -- 1. Try spawning Biker BP if archetype is biker
+    local newPuppet = nil
+    if charKey == "biker" and charDef.bp then
+        local bpClass = StaticFindObject(charDef.bp)
+        if bpClass and bpClass:IsValid() then
+            newPuppet = SpawnActorFromClass(World, bpClass, loc, rot)
+        end
+    end
+
+    -- 2. General fallback: Spawn SkeletalMeshActor with explicit full-body mesh
+    if not newPuppet or not newPuppet:IsValid() then
+        local skClass = StaticFindObject("/Script/Engine.SkeletalMeshActor")
+        if skClass and skClass:IsValid() then
+            newPuppet = SpawnActorFromClass(World, skClass, loc, rot)
+        end
+    end
+
+    if not newPuppet or not newPuppet:IsValid() then
+        Log("[CO-OP ERROR] Could not spawn PuppetActor!")
+        return nil
+    end
+
+    -- 3. Configure meshes and materials
+    pcall(function()
+        newPuppet:SetActorEnableCollision(false)
+        local skComp = newPuppet.SkeletalMeshComponent or newPuppet.Body
+        if skComp and skComp:IsValid() then
+            skComp:SetCollisionEnabled(0)
+            local bodyMesh = StaticFindObject(charDef.body)
+            if bodyMesh and bodyMesh:IsValid() then
+                skComp:SetSkeletalMesh(bodyMesh, true)
+            end
+            skComp:SetWorldScale3D({X = 1.0, Y = 1.0, Z = 1.0})
+
+            -- Pre-cache animations
+            CachedWalkAnim = StaticFindObject(AnimPaths.walk)
+            CachedIdleAnim = StaticFindObject(AnimPaths.idle)
+            if CachedIdleAnim and CachedIdleAnim:IsValid() then
+                pcall(function() skComp:PlayAnimation(CachedIdleAnim, true) end)
+            end
+        end
+    end)
+
+    PuppetActor = newPuppet
+    Log(string.format("[CO-OP] Remote puppet successfully spawned: %s", PuppetActor:GetFullName()))
+
+    -- 4. Spawn 3D World Name Tag above Puppet's head
+    local tagClass = StaticFindObject("/Script/Engine.TextRenderActor")
+    if tagClass and tagClass:IsValid() then
+        local tagLoc = { X = loc.X, Y = loc.Y, Z = loc.Z + 115.0 }
+        NameTagActor = SpawnActorFromClass(World, tagClass, tagLoc, rot)
+        if NameTagActor and NameTagActor:IsValid() then
+            pcall(function()
+                NameTagActor:SetActorEnableCollision(false)
+                local tr = NameTagActor.TextRender
+                if tr and tr:IsValid() then
+                    local label = string.format("⭐ %s [%s]", RemotePlayerName, RemotePlayerRole)
+                    tr:SetText(label)
+                    tr:SetWorldSize(28.0)
+                    tr:SetHorizontalAlignment(1) -- Center
+                    tr:SetVerticalAlignment(1)   -- Center
+                    if RemotePlayerRole == "HOST" then
+                        tr:SetTextRenderColor({R = 255, G = 210, B = 40, A = 255}) -- Warm Gold
+                    else
+                        tr:SetTextRenderColor({R = 30, G = 220, B = 255, A = 255}) -- Neon Cyan
+                    end
+                end
+            end)
+            Log(string.format("[CO-OP] 3D Name Tag created: %s", NameTagActor:GetFullName()))
+        end
+    end
+
+    return PuppetActor
+end
+
+-- ============================================================
+-- 20 Hz Transform Sync & Animation Driver (Crash-Proof)
+-- ============================================================
 local function SyncLocalPlayerState()
     local player = GetLocalPlayer()
     if not player or not player:IsValid() then return end
@@ -186,41 +388,69 @@ local function DriveRemotePuppet()
     local World = GetCurrentWorld()
     if not World or not World:IsValid() then return end
 
+    -- Lazy spawn remote puppet if not present
     if not PuppetActor or not PuppetActor:IsValid() then
         local now = os.time()
-        if IsInGameplayWorld() and (now - lastPuppetSpawnAttempt >= 3) then
-            lastPuppetSpawnAttempt = now
-            local Kismet = StaticFindObject("/Script/Engine.Default__KismetSystemLibrary")
-            if Kismet and Kismet:IsValid() then
-                Kismet:ExecuteConsoleCommand(World, "summon SkeletalMeshActor", nil)
-                local newActors = FindAllOf("SkeletalMeshActor") or {}
-                if #newActors > 0 then
-                    PuppetActor = newActors[#newActors]
-                    local localPlayer = GetLocalPlayer()
-                    if localPlayer and localPlayer:IsValid() and localPlayer.Mesh and localPlayer.Mesh:IsValid() then
-                        local skMesh = localPlayer.Mesh.SkeletalMesh
-                        if skMesh and skMesh:IsValid() and PuppetActor.SkeletalMeshComponent and PuppetActor.SkeletalMeshComponent:IsValid() then
-                            pcall(function()
-                                PuppetActor.SkeletalMeshComponent:SetSkeletalMesh(skMesh, true)
-                                local scale = localPlayer.Mesh:K2_GetComponentScale()
-                                if scale then PuppetActor.SkeletalMeshComponent:SetWorldScale3D(scale) end
-                                pcall(function() PuppetActor:SetActorEnableCollision(false) end)
-                                pcall(function() PuppetActor.SkeletalMeshComponent:SetCollisionEnabled(0) end)
-                            end)
-                        end
-                    end
-                end
-            end
+        if IsInGameplayWorld() and (now - LastSpawnAttempt >= 2) then
+            LastSpawnAttempt = now
+            SpawnRemotePuppet(World, {X = x, Y = y, Z = z}, {Pitch = pitch, Yaw = yaw, Roll = roll})
         end
     end
 
     if PuppetActor and PuppetActor:IsValid() then
         local newLoc = {X = x, Y = y, Z = z}
         local newRot = {Pitch = pitch, Yaw = yaw, Roll = roll}
-        PuppetActor:K2_SetActorLocationAndRotation(newLoc, newRot, false, nil, false)
+
+        -- CRITICAL CRASH FIX: Always pass empty table {} for SweepHitResult, NEVER nil!
+        pcall(function()
+            PuppetActor:K2_SetActorLocationAndRotation(newLoc, newRot, false, {}, false)
+        end)
+
+        -- Calculate displacement speed to drive Walk/Idle animations
+        local dx = x - LastPuppetX
+        local dy = y - LastPuppetY
+        local distMoved = math.sqrt(dx * dx + dy * dy)
+        LastPuppetX = x
+        LastPuppetY = y
+
+        local skComp = PuppetActor.SkeletalMeshComponent or PuppetActor.Body
+        if skComp and skComp:IsValid() then
+            if distMoved > 2.0 then
+                if not IsPuppetWalking and CachedWalkAnim and CachedWalkAnim:IsValid() then
+                    IsPuppetWalking = true
+                    pcall(function() skComp:PlayAnimation(CachedWalkAnim, true) end)
+                end
+            else
+                if IsPuppetWalking and CachedIdleAnim and CachedIdleAnim:IsValid() then
+                    IsPuppetWalking = false
+                    pcall(function() skComp:PlayAnimation(CachedIdleAnim, true) end)
+                end
+            end
+        end
+
+        -- Update 3D Floating Billboard Name Tag
+        if NameTagActor and NameTagActor:IsValid() then
+            local tagLoc = {X = x, Y = y, Z = z + 115.0}
+            local tagYaw = yaw
+            local localPlayer = GetLocalPlayer()
+            if localPlayer and localPlayer:IsValid() then
+                local pLoc = localPlayer:K2_GetActorLocation()
+                if pLoc then
+                    local vX = pLoc.X - x
+                    local vY = pLoc.Y - y
+                    tagYaw = math.atan(vY, vX) * (180.0 / math.pi)
+                end
+            end
+            pcall(function()
+                NameTagActor:K2_SetActorLocationAndRotation(tagLoc, {Pitch = 0.0, Yaw = tagYaw, Roll = 0.0}, false, {}, false)
+            end)
+        end
     end
 end
 
+-- ============================================================
+-- Guest Game Logic Authority Suppression
+-- ============================================================
 local function ApplyGuestSuppression()
     if Role == "guest" then
         local aiManagers = FindAllOf("GSSAIManager_BP_C") or FindAllOf("AIManager") or {}
@@ -230,7 +460,9 @@ local function ApplyGuestSuppression()
     end
 end
 
--- Event Sync Layer
+-- ============================================================
+-- Event Synchronization Layer
+-- ============================================================
 local function SendEvent(eventLine)
     local f = io.open("net/events.out", "a")
     if f then f:write(eventLine .. "\n") f:close() end
@@ -338,88 +570,52 @@ local function SyncEconomyLoop()
     end
 end
 
--- Game Hooks
-pcall(function()
-    RegisterHook("/Game/Blueprints/Widgets/MiniGames/FuelMiniGame.FuelMiniGame_C:FuelFinished_AchievementEvent", function(self, TargetDifference)
-        local diff = 0.0
-        pcall(function() diff = TargetDifference:get() end)
-        SendEvent(string.format("FUEL_DONE %.2f", diff))
-    end)
-end)
-
-pcall(function()
-    RegisterHook("/Game/Blueprints/Buildings/Trash/00_TrashItem.00_TrashItem_C:SimpleInteraction", function(self, Pawn, Comp)
-        SafeExec(function()
-            local item = self:get()
-            if item and item:IsValid() then
-                local loc = item:K2_GetActorLocation()
-                if loc then SendEvent(string.format("TRASH_PICKUP %.1f %.1f %.1f", loc.X, loc.Y, loc.Z)) end
-            end
-        end)
-    end)
-end)
-
-pcall(function()
-    RegisterHook("/Script/GSS2.CashShop:OnInteraction", function(self, Instigator)
-        if RemoteRegisterLocked then Log("WARNING: Cash register locked by partner!") end
-    end)
-end)
-
--- Loops
-LoopAsync(50, function()
-    SafeExec(function()
-        SyncLocalPlayerState()
-        DriveRemotePuppet()
-        ProcessIncomingEvents()
-    end)
-    return false
-end)
-
-LoopAsync(1000, function()
-    SyncEconomyLoop()
-    return false
-end)
-
-LoopAsync(3000, function()
-    ApplyGuestSuppression()
-    return false
-end)
-
 -- ============================================================
--- Silent Background Relay & Safe On-Screen Co-op UI
+-- In-Game Status HUD (Real-Time Handshake Feedback)
 -- ============================================================
-local RelayLaunched = false
-
-local function EnsureBackgroundRelay()
-    if RelayLaunched then return end
-    RelayLaunched = true
-    SafeExec(function()
-        os.execute("cmd /c if not exist net mkdir net")
-        -- Use pythonw.exe so ZERO command windows appear on the user's desktop!
-        os.execute('start "" pythonw "gss_relay.py" --mode auto --port 7777 --netdir "net"')
-    end)
-end
-
--- Safe Main Menu Display (NEVER modifies FText directly to prevent crashes)
-local function UpdateMainMenuUI()
+local function UpdateInGameHUD()
     local World = GetCurrentWorld()
-    if World and World:IsValid() and World:GetFullName():lower():find("menu") then
-        local Kismet = StaticFindObject("/Script/Engine.Default__KismetSystemLibrary")
-        if Kismet and Kismet:IsValid() then
-            local banner = ""
-            local color = {R = 0.0, G = 1.0, B = 0.5, A = 1.0}
+    if not World or not World:IsValid() then return end
+
+    local Kismet = StaticFindObject("/Script/Engine.Default__KismetSystemLibrary")
+    if not Kismet or not Kismet:IsValid() then return end
+
+    local isConnected = CheckPeerStatus()
+    local banner = ""
+    local color = {R = 0.0, G = 1.0, B = 0.5, A = 1.0}
+
+    if IsInGameplayWorld() then
+        if isConnected then
+            banner = string.format("⭐ CO-OP CONNECTED | Partner: %s [%s] | Route 66 Station Synchronized", RemotePlayerName, RemotePlayerRole)
+            color = {R = 0.0, G = 1.0, B = 0.6, A = 1.0}
+        else
             if Role == "host" then
-                banner = "[CO-OP HOST ACTIVE] Server live on port 7777! Share your IP with friends."
-            elseif Role == "guest" then
-                banner = "[CO-OP CONNECTED] Synced with Host! Co-op Station ready."
-            else
-                banner = "GAS STATION CO-OP:  [F9] HOST A WORLD   |   [F8] JOIN A WORLD   |   (or click DLC on menu)"
+                banner = string.format("[CO-OP HOST] Waiting for partner to connect on port 7777... (Share your IP!)")
                 color = {R = 1.0, G = 0.85, B = 0.2, A = 1.0}
+            elseif Role == "guest" then
+                banner = string.format("[CO-OP CLIENT] Connecting to Host station...")
+                color = {R = 0.2, G = 0.8, B = 1.0, A = 1.0}
             end
+        end
+        if banner ~= "" then
             pcall(function()
-                Kismet:PrintString(World, banner, true, false, color, 1.8)
+                Kismet:PrintString(World, banner, true, false, color, 1.0)
             end)
         end
+    elseif World:GetFullName():lower():find("menu") then
+        if Role == "host" then
+            banner = "[CO-OP HOST] Server active on port 7777! Entering station..."
+            color = {R = 0.0, G = 1.0, B = 0.5, A = 1.0}
+        elseif Role == "guest" then
+            banner = "[CO-OP CLIENT] Synced with Host! Entering station..."
+            color = {R = 0.2, G = 0.8, B = 1.0, A = 1.0}
+        else
+            banner = "GAS STATION CO-OP:  [F9] HOST A WORLD   |   [F8] JOIN A WORLD   |   (or click DLC on menu)"
+            color = {R = 1.0, G = 0.85, B = 0.2, A = 1.0}
+        end
+        pcall(function()
+            Kismet:PrintString(World, banner, true, false, color, 1.8)
+        end)
     end
 end
 
@@ -429,6 +625,8 @@ end
 local HasEnteredGameplay = false
 local LevelAttemptCount = 0
 local LastAttemptTime = 0
+local LevelLoadInProgress = false
+local LevelLoadStartTime = 0
 
 local function TryTriggerLevelLoad(menu)
     local World = GetCurrentWorld()
@@ -438,8 +636,14 @@ local function TryTriggerLevelLoad(menu)
     if wname:find("demomapka") and GetLocalPlayer() ~= nil then
         if not HasEnteredGameplay then
             HasEnteredGameplay = true
+            LevelLoadInProgress = false
             Log("[CO-OP] *** SUCCESSFULLY INSIDE STATION GAMEPLAY (DemoMapka)! ***")
         end
+        return true
+    end
+
+    local now = os.time()
+    if LevelLoadInProgress and (now - LevelLoadStartTime < 8) then
         return true
     end
 
@@ -451,32 +655,24 @@ local function TryTriggerLevelLoad(menu)
     end
 
     LevelAttemptCount = LevelAttemptCount + 1
+    LevelLoadInProgress = true
+    LevelLoadStartTime = now
     Log(string.format("[CO-OP] Station Level Load Attempt #%d (Role: %s)...", LevelAttemptCount, tostring(Role)))
 
     if menu and menu:IsValid() then
-        -- Stage 1: Try Continue Button (loads starter save into station)
         local canLoad = false
         pcall(function() canLoad = menu.bCanBeLoaded end)
 
         if canLoad then
-            Log("[CO-OP] [STAGE 1] Save slot confirmed (bCanBeLoaded=true)! Clicking Continue Button...")
+            Log("[CO-OP] [STAGE 1] Save slot confirmed! Clicking Continue Button...")
             local s, err = pcall(function()
                 menu:BndEvt__ContinueButton_K2Node_ComponentBoundEvent_1_OnClicked__DelegateSignature()
             end)
-            if s then
-                Log("[CO-OP] ContinueButton executed successfully!")
-                return true
-            else
-                Log("[CO-OP] ContinueButton failed: " .. tostring(err))
-            end
-        else
-            Log("[CO-OP] Save slot reading in progress (bCanBeLoaded=false)...")
+            if s then return true end
         end
 
-        -- Stage 2: If MapSelectionWidget is active, click first map (Route 66 / Desert Station)
         pcall(function()
             if menu.MapSelectionWidget and menu.MapSelectionWidget:IsValid() then
-                Log("[CO-OP] [STAGE 2] MapSelectionWidget active! Clicking first map button...")
                 local buttons = menu.MapSelectionWidget.MapsButtons
                 if buttons and #buttons > 0 and buttons[1]:IsValid() then
                     pcall(function() buttons[1]:GamePadClick() end)
@@ -485,7 +681,6 @@ local function TryTriggerLevelLoad(menu)
             end
         end)
 
-        -- Stage 3: After waiting 5 attempts (~6-8s), try NewGameButton if still not loaded
         if LevelAttemptCount >= 5 and not canLoad then
             Log("[CO-OP] [STAGE 3] Triggering NewGameButton...")
             pcall(function()
@@ -493,13 +688,11 @@ local function TryTriggerLevelLoad(menu)
                 menu:StartNewGame()
             end)
         end
-    else
-        Log("[CO-OP] MainMenuOverviewWidgetBP not found yet.")
     end
 
-    -- Stage 4: Crash-Proof Console Fallback after 6 attempts
+    -- Stage 4: Console Fallback after 6 attempts
     if LevelAttemptCount >= 6 and World and World:IsValid() then
-        Log("[CO-OP] [STAGE 4] Executing crash-proof console fallback: open DemoMapka...")
+        Log("[CO-OP] [STAGE 4] Executing console fallback: open DemoMapka...")
         local Kismet = StaticFindObject("/Script/Engine.Default__KismetSystemLibrary")
         if Kismet and Kismet:IsValid() then
             pcall(function()
@@ -511,7 +704,7 @@ local function TryTriggerLevelLoad(menu)
     return false
 end
 
--- Option 1: Host a World Action
+-- Role Actions
 local function ExecuteHostGame(menu)
     Log("[CO-OP] >>> OPTION 1: HOST A WORLD <<<")
     LockAndSetRole("host")
@@ -519,16 +712,16 @@ local function ExecuteHostGame(menu)
     TryTriggerLevelLoad(menu)
 end
 
--- Option 2: Join a World Action
 local function ExecuteJoinGame(menu, promptForIP)
     Log("[CO-OP] >>> OPTION 2: JOIN A WORLD <<<")
     local targetIP = "127.0.0.1"
 
     if promptForIP then
-        os.execute('start /wait pythonw "coop_menu.py"')
+        -- Open dialog asynchronously (NO /wait so game thread never hangs)
+        os.execute('start "" pythonw "coop_menu.py"')
     end
 
-    local f = io.open("host_ip.txt", "r") or io.open("net/host_ip.txt", "r")
+    local f = io.open("net/host_ip.txt", "r") or io.open("host_ip.txt", "r")
     if f then
         local content = f:read("*all")
         f:close()
@@ -543,12 +736,11 @@ local function ExecuteJoinGame(menu, promptForIP)
     TryTriggerLevelLoad(menu)
 end
 
--- Hook Main Menu DLC Button Click to open the 2-Option Selector Dialog (SILENT GUI)
+-- Hook Main Menu DLC Button Click
 pcall(function()
     RegisterHook("/Game/Blueprints/Widgets/MainMenu/MainMenuOverviewWidgetBP.MainMenuOverviewWidgetBP_C:BndEvt__MainMenuOverviewWidgetBP_DLCButton_K2Node_ComponentBoundEvent_3_OnClicked__DelegateSignature", function(self)
         SafeExec(function()
             local menu = self:get()
-
             if Role == "host" or Role == "guest" then
                 if menu.ContinueButton and menu.ContinueButton:IsValid() and menu.bCanBeLoaded then
                     menu:BndEvt__ContinueButton_K2Node_ComponentBoundEvent_1_OnClicked__DelegateSignature()
@@ -559,30 +751,14 @@ pcall(function()
             end
 
             Log("[CO-OP] DLC clicked! Opening Host / Join Selector Dialog...")
-            -- Use pythonw so zero black cmd windows appear
-            os.execute('start /wait pythonw "coop_menu.py"')
-
-            local chosenRole = nil
-            local f = io.open("role.txt", "r") or io.open("net/role.txt", "r")
-            if f then
-                local c = f:read("*all")
-                f:close()
-                if c then chosenRole = c:match("(%a+)") end
-            end
-
-            if chosenRole == "host" then
-                ExecuteHostGame(menu)
-            elseif chosenRole == "guest" then
-                ExecuteJoinGame(menu, false)
-            end
+            -- Launch asynchronously without /wait
+            os.execute('start "" pythonw "coop_menu.py"')
         end)
     end)
 end)
 
 -- ============================================================
--- Pause Menu & ESC Co-op Fix (Direct, Crash-Proof & Instant)
--- Fixes UE4 multiplayer glitch where Resume button stays stuck
--- on screen or ESC minimizes/loses focus.
+-- Pause Menu & ESC Glitch Fix
 -- ============================================================
 local function RestoreGameplayInput()
     local pc = (UEHelpers and UEHelpers.GetPlayerController) and UEHelpers.GetPlayerController() or FindFirstOf("PlayerController")
@@ -604,7 +780,6 @@ local function RestoreGameplayInput()
     end
 end
 
--- Hook IngameMenuContainer:ResumeGame
 pcall(function()
     RegisterHook("/MenuSystemPro/Blueprints/UI/Menus/Ingame/IngameMenuContainerWidgetBP.IngameMenuContainerWidgetBP_C:ResumeGame", function(self)
         local container = self:get()
@@ -616,7 +791,6 @@ pcall(function()
     end)
 end)
 
--- Hook IngameMenuOverview Resume Button Click
 pcall(function()
     RegisterHook("/MenuSystemPro/Blueprints/UI/Menus/Ingame/IngameMenuOverviewWidgetBP.IngameMenuOverviewWidgetBP_C:BndEvt__ResumeButton_K2Node_ComponentBoundEvent_1_OnClicked__DelegateSignature", function(self)
         local overview = self:get()
@@ -632,23 +806,6 @@ pcall(function()
     end)
 end)
 
--- Hook IngameMenuOverview:ResumeManualCall
-pcall(function()
-    RegisterHook("/MenuSystemPro/Blueprints/UI/Menus/Ingame/IngameMenuOverviewWidgetBP.IngameMenuOverviewWidgetBP_C:ResumeManualCall", function(self)
-        local overview = self:get()
-        if overview and overview:IsValid() then
-            if overview.IngameMenuWidget and overview.IngameMenuWidget:IsValid() then
-                pcall(function() overview.IngameMenuWidget:RemoveFromViewport() end)
-                pcall(function() overview.IngameMenuWidget:SetVisibility(2) end)
-            end
-            pcall(function() overview:RemoveFromViewport() end)
-            pcall(function() overview:SetVisibility(2) end)
-        end
-        RestoreGameplayInput()
-    end)
-end)
-
--- Hook IngameMenuOverview:OnPressedBack (ESC key inside menu)
 pcall(function()
     RegisterHook("/MenuSystemPro/Blueprints/UI/Menus/Ingame/IngameMenuOverviewWidgetBP.IngameMenuOverviewWidgetBP_C:OnPressedBack", function(self)
         local overview = self:get()
@@ -664,52 +821,63 @@ pcall(function()
     end)
 end)
 
--- Dedicated Hotkeys:
--- F9 = OPTION 1: HOST A WORLD
+-- Dedicated Hotkeys
 RegisterKeyBind(Key.F9, function()
     local menus = FindAllOf("MainMenuOverviewWidgetBP_C") or {}
     local menu = (#menus > 0 and menus[1]:IsValid()) and menus[1] or nil
     ExecuteHostGame(menu)
 end)
 
--- F8 = OPTION 2: JOIN A WORLD (Pops up IP prompt to join from any Wi-Fi)
 RegisterKeyBind(Key.F8, function()
     local menus = FindAllOf("MainMenuOverviewWidgetBP_C") or {}
     local menu = (#menus > 0 and menus[1]:IsValid()) and menus[1] or nil
     ExecuteJoinGame(menu, true)
 end)
 
-RegisterKeyBind(Key.F6, function() RunSDKDump() end)
-RegisterKeyBind(Key.F7, function() DumpWorldState() end)
+-- Loops
+LoopAsync(50, function()
+    SafeExec(function()
+        SyncLocalPlayerState()
+        DriveRemotePuppet()
+        ProcessIncomingEvents()
+    end)
+    return false
+end)
 
--- Menu update & continuous level enter loop (runs every 1000ms)
 LoopAsync(1000, function()
     EnsureBackgroundRelay()
-    UpdateMainMenuUI()
+    UpdateInGameHUD()
+    SyncEconomyLoop()
 
-    -- Check if we are already in gameplay
+    -- Check if world transitioned
     local World = GetCurrentWorld()
     if World and World:IsValid() then
         local wname = World:GetFullName():lower()
         if wname:find("demomapka") and GetLocalPlayer() ~= nil then
             if not HasEnteredGameplay then
                 HasEnteredGameplay = true
+                LevelLoadInProgress = false
                 Log("[CO-OP] *** CONNECTED TO GAS STATION WORLD! MULTIPLAYER SYNC RUNNING. ***")
             end
             return false
+        else
+            -- Left gameplay world -> invalidate cached actors
+            if HasEnteredGameplay then
+                HasEnteredGameplay = false
+                PuppetActor = nil
+                NameTagActor = nil
+                CachedLocalPlayer = nil
+            end
         end
     end
 
-    -- If still in menu and role is host or guest, attempt level entry
+    -- Trigger level load if role selected and not yet in gameplay
     if (Role == "host" or Role == "guest") and not HasEnteredGameplay then
         local now = os.time()
         if now - LastAttemptTime >= 1 then
             LastAttemptTime = now
             ExecuteInGameThread(function()
-                local s, err = pcall(TryTriggerLevelLoad, nil)
-                if not s then
-                    Log("[CO-OP ERROR in TryTriggerLevelLoad] " .. tostring(err))
-                end
+                pcall(TryTriggerLevelLoad, nil)
             end)
         end
     end
@@ -717,4 +885,10 @@ LoopAsync(1000, function()
     return false
 end)
 
-Log("GasStationCoop initialized. In-game 2-Option Co-op Menu active (Host a World / Join a World).")
+LoopAsync(3000, function()
+    ApplyGuestSuppression()
+    ReadLocalProfile()
+    return false
+end)
+
+Log("GasStationCoop Engine v2.0 initialized. 3D Character Puppets, Floating Name Tags, and State Replication active.")
