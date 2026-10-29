@@ -134,13 +134,13 @@ local function EnsureNetDir()
 end
 EnsureNetDir()
 
+local CachedLocalPlayer = nil
 local function GetLocalPlayer()
-    local chars = FindAllOf("PlayerCharacter_BP_C") or FindAllOf("GSSPlayerCharacter") or FindAllOf("Character")
-    if not chars or #chars == 0 then return nil end
-    for _, c in ipairs(chars) do
-        if c:IsValid() and c ~= PuppetActor then return c end
+    if CachedLocalPlayer and CachedLocalPlayer:IsValid() then
+        return CachedLocalPlayer
     end
-    return nil
+    CachedLocalPlayer = FindFirstOf("PlayerCharacter_BP_C") or FindFirstOf("GSSPlayerCharacter")
+    return CachedLocalPlayer
 end
 
 local function IsInGameplayWorld()
@@ -152,72 +152,68 @@ local function IsInGameplayWorld()
 end
 
 local function SyncLocalPlayerState()
-    SafeExec(function()
-        local player = GetLocalPlayer()
-        if not player or not player:IsValid() then return end
+    local player = GetLocalPlayer()
+    if not player or not player:IsValid() then return end
 
-        local loc = player:K2_GetActorLocation()
-        local rot = player:K2_GetActorRotation()
-        if not loc or not rot then return end
+    local loc = player:K2_GetActorLocation()
+    local rot = player:K2_GetActorRotation()
+    if not loc or not rot then return end
 
-        local stateStr = string.format("%.2f %.2f %.2f %.2f %.2f %.2f", loc.X, loc.Y, loc.Z, rot.Pitch, rot.Yaw, rot.Roll)
-        local f = io.open("net/local_player.state", "w")
-        if f then
-            f:write(stateStr)
-            f:close()
-        end
-    end)
+    local stateStr = string.format("%.2f %.2f %.2f %.2f %.2f %.2f", loc.X, loc.Y, loc.Z, rot.Pitch, rot.Yaw, rot.Roll)
+    local f = io.open("net/local_player.state", "w")
+    if f then
+        f:write(stateStr)
+        f:close()
+    end
 end
 
 local function DriveRemotePuppet()
-    SafeExec(function()
-        local f = io.open("net/remote_player.state", "r")
-        if not f then return end
-        local line = f:read("*line")
-        f:close()
-        if not line or line == "" then return end
+    local f = io.open("net/remote_player.state", "r")
+    if not f then return end
+    local line = f:read("*line")
+    f:close()
+    if not line or line == "" then return end
 
-        local x, y, z, pitch, yaw, roll = line:match("([%d.-]+)%s+([%d.-]+)%s+([%d.-]+)%s+([%d.-]+)%s+([%d.-]+)%s+([%d.-]+)")
-        if not x then return end
+    local x, y, z, pitch, yaw, roll = line:match("([%d.-]+)%s+([%d.-]+)%s+([%d.-]+)%s+([%d.-]+)%s+([%d.-]+)%s+([%d.-]+)")
+    if not x then return end
 
-        x, y, z = tonumber(x), tonumber(y), tonumber(z)
-        pitch, yaw, roll = tonumber(pitch), tonumber(yaw), tonumber(roll)
+    x, y, z = tonumber(x), tonumber(y), tonumber(z)
+    pitch, yaw, roll = tonumber(pitch), tonumber(yaw), tonumber(roll)
 
-        local World = GetCurrentWorld()
-        if not World or not World:IsValid() then return end
+    local World = GetCurrentWorld()
+    if not World or not World:IsValid() then return end
 
-        if not PuppetActor or not PuppetActor:IsValid() then
-            local now = os.time()
-            if IsInGameplayWorld() and (now - lastPuppetSpawnAttempt >= 3) then
-                lastPuppetSpawnAttempt = now
-                local Kismet = StaticFindObject("/Script/Engine.Default__KismetSystemLibrary")
-                if Kismet and Kismet:IsValid() then
-                    Kismet:ExecuteConsoleCommand(World, "summon SkeletalMeshActor", nil)
-                    local newActors = FindAllOf("SkeletalMeshActor") or {}
-                    if #newActors > 0 then
-                        PuppetActor = newActors[#newActors]
-                        local localPlayer = GetLocalPlayer()
-                        if localPlayer and localPlayer:IsValid() and localPlayer.Mesh and localPlayer.Mesh:IsValid() then
-                            local skMesh = localPlayer.Mesh.SkeletalMesh
-                            if skMesh and skMesh:IsValid() and PuppetActor.SkeletalMeshComponent and PuppetActor.SkeletalMeshComponent:IsValid() then
-                                pcall(function()
-                                    PuppetActor.SkeletalMeshComponent:SetSkeletalMesh(skMesh, true)
-                                    local scale = localPlayer.Mesh:K2_GetComponentScale()
-                                    if scale then PuppetActor.SkeletalMeshComponent:SetWorldScale3D(scale) end
-                                end)
-                            end
+    if not PuppetActor or not PuppetActor:IsValid() then
+        local now = os.time()
+        if IsInGameplayWorld() and (now - lastPuppetSpawnAttempt >= 3) then
+            lastPuppetSpawnAttempt = now
+            local Kismet = StaticFindObject("/Script/Engine.Default__KismetSystemLibrary")
+            if Kismet and Kismet:IsValid() then
+                Kismet:ExecuteConsoleCommand(World, "summon SkeletalMeshActor", nil)
+                local newActors = FindAllOf("SkeletalMeshActor") or {}
+                if #newActors > 0 then
+                    PuppetActor = newActors[#newActors]
+                    local localPlayer = GetLocalPlayer()
+                    if localPlayer and localPlayer:IsValid() and localPlayer.Mesh and localPlayer.Mesh:IsValid() then
+                        local skMesh = localPlayer.Mesh.SkeletalMesh
+                        if skMesh and skMesh:IsValid() and PuppetActor.SkeletalMeshComponent and PuppetActor.SkeletalMeshComponent:IsValid() then
+                            pcall(function()
+                                PuppetActor.SkeletalMeshComponent:SetSkeletalMesh(skMesh, true)
+                                local scale = localPlayer.Mesh:K2_GetComponentScale()
+                                if scale then PuppetActor.SkeletalMeshComponent:SetWorldScale3D(scale) end
+                            end)
                         end
                     end
                 end
             end
         end
+    end
 
-        if PuppetActor and PuppetActor:IsValid() then
-            local newLoc = {X = x, Y = y, Z = z}
-            local newRot = {Pitch = pitch, Yaw = yaw, Roll = roll}
-            PuppetActor:K2_SetActorLocationAndRotation(newLoc, newRot, false, nil, false)
-        end
-    end)
+    if PuppetActor and PuppetActor:IsValid() then
+        local newLoc = {X = x, Y = y, Z = z}
+        local newRot = {Pitch = pitch, Yaw = yaw, Roll = roll}
+        PuppetActor:K2_SetActorLocationAndRotation(newLoc, newRot, false, nil, false)
+    end
 end
 
 local function ApplyGuestSuppression()
@@ -365,10 +361,12 @@ pcall(function()
 end)
 
 -- Loops
-LoopAsync(33, function()
-    SyncLocalPlayerState()
-    DriveRemotePuppet()
-    ProcessIncomingEvents()
+LoopAsync(50, function()
+    SafeExec(function()
+        SyncLocalPlayerState()
+        DriveRemotePuppet()
+        ProcessIncomingEvents()
+    end)
     return false
 end)
 
@@ -502,109 +500,88 @@ pcall(function()
 end)
 
 -- ============================================================
--- Pause Menu & ESC Co-op Fix
+-- Pause Menu & ESC Co-op Fix (Direct, Crash-Proof & Instant)
 -- Fixes UE4 multiplayer glitch where Resume button stays stuck
 -- on screen or ESC minimizes/loses focus.
 -- ============================================================
-local function DismissPauseMenu()
-    SafeExec(function()
-        Log("[PAUSE] Dismissing Pause Menu and restoring full gameplay...")
-
-        -- 1. Remove all IngameMenuContainer widgets
-        local containers = FindAllOf("IngameMenuContainerWidgetBP_C") or {}
-        for _, c in ipairs(containers) do
-            if c and c:IsValid() then
-                pcall(function() c:RemoveFromViewport() end)
-                pcall(function() c:RemoveFromParent() end)
-                pcall(function() c:SetVisibility(2) end) -- ESlateVisibility::Collapsed
-            end
+local function RestoreGameplayInput()
+    local pc = (UEHelpers and UEHelpers.GetPlayerController) and UEHelpers.GetPlayerController() or FindFirstOf("PlayerController")
+    if pc and pc:IsValid() then
+        pcall(function()
+            pc.bShowMouseCursor = false
+            pc.bEnableClickEvents = false
+            pc.bEnableMouseOverEvents = false
+            pc:SetIgnoreLookInput(false)
+            pc:SetIgnoreMoveInput(false)
+        end)
+        local WBP = StaticFindObject("/Script/UMG.Default__WidgetBlueprintLibrary")
+        if WBP and WBP:IsValid() then
+            pcall(function()
+                WBP:SetInputMode_GameOnly(pc)
+                WBP:SetFocusToGameViewport()
+            end)
         end
-
-        -- 2. Remove all IngameMenuOverview widgets
-        local overviews = FindAllOf("IngameMenuOverviewWidgetBP_C") or {}
-        for _, o in ipairs(overviews) do
-            if o and o:IsValid() then
-                pcall(function() o:RemoveFromViewport() end)
-                pcall(function() o:RemoveFromParent() end)
-                pcall(function() o:SetVisibility(2) end)
-            end
-        end
-
-        -- 3. Clear PauseMenuRef on all player characters
-        local chars = FindAllOf("PlayerCharacter_BP_C") or {}
-        for _, ch in ipairs(chars) do
-            if ch and ch:IsValid() then
-                pcall(function() ch.PauseMenuRef = nil end)
-            end
-        end
-
-        -- 4. Restore input mode to GameOnly and re-lock mouse to viewport
-        local PCs = FindAllOf("PlayerController") or {}
-        for _, pc in ipairs(PCs) do
-            if pc and pc:IsValid() then
-                pcall(function()
-                    pc.bShowMouseCursor = false
-                    pc.bEnableClickEvents = false
-                    pc.bEnableMouseOverEvents = false
-                    pc:SetIgnoreLookInput(false)
-                    pc:SetIgnoreMoveInput(false)
-                end)
-                pcall(function()
-                    local WBP = StaticFindObject("/Script/UMG.Default__WidgetBlueprintLibrary")
-                    if WBP and WBP:IsValid() then
-                        WBP:SetInputMode_GameOnly(pc)
-                        WBP:SetFocusToGameViewport()
-                    end
-                end)
-            end
-        end
-    end)
+    end
 end
 
 -- Hook IngameMenuContainer:ResumeGame
 pcall(function()
     RegisterHook("/MenuSystemPro/Blueprints/UI/Menus/Ingame/IngameMenuContainerWidgetBP.IngameMenuContainerWidgetBP_C:ResumeGame", function(self)
-        DismissPauseMenu()
+        local container = self:get()
+        if container and container:IsValid() then
+            pcall(function() container:RemoveFromViewport() end)
+            pcall(function() container:SetVisibility(2) end)
+        end
+        RestoreGameplayInput()
     end)
 end)
 
--- Hook IngameMenuOverview:BndEvt__ResumeButton_K2Node_ComponentBoundEvent_1_OnClicked__DelegateSignature
+-- Hook IngameMenuOverview Resume Button Click
 pcall(function()
     RegisterHook("/MenuSystemPro/Blueprints/UI/Menus/Ingame/IngameMenuOverviewWidgetBP.IngameMenuOverviewWidgetBP_C:BndEvt__ResumeButton_K2Node_ComponentBoundEvent_1_OnClicked__DelegateSignature", function(self)
-        DismissPauseMenu()
+        local overview = self:get()
+        if overview and overview:IsValid() then
+            if overview.IngameMenuWidget and overview.IngameMenuWidget:IsValid() then
+                pcall(function() overview.IngameMenuWidget:RemoveFromViewport() end)
+                pcall(function() overview.IngameMenuWidget:SetVisibility(2) end)
+            end
+            pcall(function() overview:RemoveFromViewport() end)
+            pcall(function() overview:SetVisibility(2) end)
+        end
+        RestoreGameplayInput()
     end)
 end)
 
 -- Hook IngameMenuOverview:ResumeManualCall
 pcall(function()
     RegisterHook("/MenuSystemPro/Blueprints/UI/Menus/Ingame/IngameMenuOverviewWidgetBP.IngameMenuOverviewWidgetBP_C:ResumeManualCall", function(self)
-        DismissPauseMenu()
+        local overview = self:get()
+        if overview and overview:IsValid() then
+            if overview.IngameMenuWidget and overview.IngameMenuWidget:IsValid() then
+                pcall(function() overview.IngameMenuWidget:RemoveFromViewport() end)
+                pcall(function() overview.IngameMenuWidget:SetVisibility(2) end)
+            end
+            pcall(function() overview:RemoveFromViewport() end)
+            pcall(function() overview:SetVisibility(2) end)
+        end
+        RestoreGameplayInput()
     end)
 end)
 
--- Hook IngameMenuOverview:OnPressedBack (ESC while paused)
+-- Hook IngameMenuOverview:OnPressedBack (ESC key inside menu)
 pcall(function()
     RegisterHook("/MenuSystemPro/Blueprints/UI/Menus/Ingame/IngameMenuOverviewWidgetBP.IngameMenuOverviewWidgetBP_C:OnPressedBack", function(self)
-        DismissPauseMenu()
-    end)
-end)
-
--- Register ESC hotkey to toggle / dismiss cleanly
-RegisterKeyBind(Key.ESCAPE, function()
-    local containers = FindAllOf("IngameMenuContainerWidgetBP_C") or {}
-    local isAnyVisible = false
-    for _, c in ipairs(containers) do
-        if c and c:IsValid() then
-            local status, inV = pcall(function() return c:IsInViewport() end)
-            if status and inV then
-                isAnyVisible = true
-                break
+        local overview = self:get()
+        if overview and overview:IsValid() then
+            if overview.IngameMenuWidget and overview.IngameMenuWidget:IsValid() then
+                pcall(function() overview.IngameMenuWidget:RemoveFromViewport() end)
+                pcall(function() overview.IngameMenuWidget:SetVisibility(2) end)
             end
+            pcall(function() overview:RemoveFromViewport() end)
+            pcall(function() overview:SetVisibility(2) end)
         end
-    end
-    if isAnyVisible then
-        DismissPauseMenu()
-    end
+        RestoreGameplayInput()
+    end)
 end)
 
 -- Dedicated Hotkeys:
