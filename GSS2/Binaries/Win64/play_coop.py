@@ -17,9 +17,34 @@ import threading
 import time
 import webview
 
-DIR_A = r"D:\coop-sandbox\gss\A\GSS2\Binaries\Win64"
-EXE_PATH = os.path.join(DIR_A, "GSS2-Win64-Shipping.exe")
-USER_DIR = r"D:\coop-sandbox\gss\userA"
+def find_game_directory():
+    # 1. Current script folder
+    cur_dir = os.path.dirname(os.path.abspath(__file__))
+    if os.path.exists(os.path.join(cur_dir, "GSS2-Win64-Shipping.exe")):
+        return cur_dir
+
+    # 2. Subfolder GSS2/Binaries/Win64
+    sub = os.path.join(cur_dir, "GSS2", "Binaries", "Win64")
+    if os.path.exists(os.path.join(sub, "GSS2-Win64-Shipping.exe")):
+        return sub
+
+    # 3. Sandboxes (if on dev PC)
+    for p in [r"D:\coop-sandbox\gss\A\GSS2\Binaries\Win64", r"D:\coop-sandbox\gss\B\GSS2\Binaries\Win64"]:
+        if os.path.exists(os.path.join(p, "GSS2-Win64-Shipping.exe")):
+            return p
+
+    # 4. Steam common installs
+    for d in ["C", "D", "E", "F", "G", "H"]:
+        for pat in [
+            r"{}:\SteamLibrary\steamapps\common\Gas Station Simulator\GSS2\Binaries\Win64",
+            r"{}:\Program Files (x86)\Steam\steamapps\common\Gas Station Simulator\GSS2\Binaries\Win64",
+            r"{}:\Steam\steamapps\common\Gas Station Simulator\GSS2\Binaries\Win64"
+        ]:
+            cand = pat.format(d)
+            if os.path.exists(os.path.join(cand, "GSS2-Win64-Shipping.exe")):
+                return cand
+
+    return cur_dir
 
 CREATE_NO_WINDOW = 0x08000000
 
@@ -138,12 +163,20 @@ def scan_for_local_host(timeout=0.6):
     return {"found": False, "ip": "", "name": ""}
 
 
-def ensure_optimal_game_settings(w, h):
+def ensure_optimal_game_settings(game_dir, w, h):
     """Enforces high-performance 180Hz Borderless Mode at 2560x1600 native display."""
-    ini_path = os.path.join(USER_DIR, "Saved__coopA", "Config", "WindowsNoEditor", "GameUserSettings.ini")
-    try:
-        os.makedirs(os.path.dirname(ini_path), exist_ok=True)
-        content = f"""[/Script/Engine.GameUserSettings]
+    ini_paths = []
+    if "coop-sandbox" in game_dir:
+        ini_paths.append(r"D:\coop-sandbox\gss\userA\Saved__coopA\Config\WindowsNoEditor\GameUserSettings.ini")
+    
+    appdata = os.getenv("LOCALAPPDATA")
+    if appdata:
+        ini_paths.append(os.path.join(appdata, "GSS2", "Saved", "Config", "WindowsNoEditor", "GameUserSettings.ini"))
+
+    for ini_path in ini_paths:
+        try:
+            os.makedirs(os.path.dirname(ini_path), exist_ok=True)
+            content = f"""[/Script/Engine.GameUserSettings]
 FullscreenMode=1
 LastConfirmedFullscreenMode=1
 PreferredFullscreenMode=1
@@ -197,20 +230,22 @@ AmbientOcclusionEnabled=True
 [DefaultInputBindingsVersion]
 DefaultInputBindingsVersion=1.0.0.5
 """
-        with open(ini_path, "w", encoding="utf-8") as f:
-            f.write(content)
-    except Exception:
-        pass
+            with open(ini_path, "w", encoding="utf-8") as f:
+                f.write(content)
+        except Exception:
+            pass
 
 def launch_game_process(role, target_ip="127.0.0.1"):
+    game_dir = find_game_directory()
+    exe_path = os.path.join(game_dir, "GSS2-Win64-Shipping.exe")
     scr_w, scr_h = get_screen_metrics()
-    ensure_optimal_game_settings(scr_w, scr_h)
+    ensure_optimal_game_settings(game_dir, scr_w, scr_h)
 
     # 1. Update role.txt
     for path in [
-        os.path.join(DIR_A, "role.txt"),
-        os.path.join(DIR_A, "net", "role.txt"),
-        os.path.join(DIR_A, "Mods", "GasStationCoop", "role.txt")
+        os.path.join(game_dir, "role.txt"),
+        os.path.join(game_dir, "net", "role.txt"),
+        os.path.join(game_dir, "Mods", "GasStationCoop", "role.txt")
     ]:
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -222,41 +257,46 @@ def launch_game_process(role, target_ip="127.0.0.1"):
     # 2. If client, update host_ip.txt
     if role == "guest":
         for path in [
-            os.path.join(DIR_A, "host_ip.txt"),
-            os.path.join(DIR_A, "net", "host_ip.txt")
+            os.path.join(game_dir, "host_ip.txt"),
+            os.path.join(game_dir, "net", "host_ip.txt")
         ]:
             try:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(f"{target_ip}\n")
             except Exception:
                 pass
 
     # 3. Launch silent background relay via pythonw
-    relay_script = os.path.join(DIR_A, "gss_relay.py")
-    if role == "host":
-        subprocess.Popen(
-            ["pythonw", relay_script, "--mode", "host", "--netdir", os.path.join(DIR_A, "net")],
-            cwd=DIR_A,
-            creationflags=CREATE_NO_WINDOW
-        )
-    else:
-        subprocess.Popen(
-            ["pythonw", relay_script, "--mode", "client", "--connect", target_ip, "--netdir", os.path.join(DIR_A, "net")],
-            cwd=DIR_A,
-            creationflags=CREATE_NO_WINDOW
-        )
+    relay_script = os.path.join(game_dir, "gss_relay.py")
+    if os.path.exists(relay_script):
+        if role == "host":
+            subprocess.Popen(
+                ["pythonw", relay_script, "--mode", "host", "--netdir", os.path.join(game_dir, "net")],
+                cwd=game_dir,
+                creationflags=CREATE_NO_WINDOW
+            )
+        else:
+            subprocess.Popen(
+                ["pythonw", relay_script, "--mode", "client", "--connect", target_ip, "--netdir", os.path.join(game_dir, "net")],
+                cwd=game_dir,
+                creationflags=CREATE_NO_WINDOW
+            )
 
     # 4. Launch game in native Borderless mode (2560x1600 @ 180Hz)
     args = [
-        EXE_PATH,
+        exe_path,
         "-borderless",
         f"-ResX={scr_w}",
         f"-ResY={scr_h}",
         "-nosplash",
-        "-saveddirsuffix=_coopA",
-        f'-userdir="{USER_DIR}"'
     ]
-    subprocess.Popen(args, cwd=DIR_A, creationflags=CREATE_NO_WINDOW)
+    if "coop-sandbox" in game_dir and "\\A\\" in game_dir:
+        args.extend(["-saveddirsuffix=_coopA", '-userdir="D:\\coop-sandbox\\gss\\userA"'])
+    elif "coop-sandbox" in game_dir and "\\B\\" in game_dir:
+        args.extend(["-saveddirsuffix=_coopB", '-userdir="D:\\coop-sandbox\\gss\\userB"'])
+
+    subprocess.Popen(args, cwd=game_dir, creationflags=CREATE_NO_WINDOW)
 
 
 class LauncherApi:
@@ -288,7 +328,8 @@ class LauncherApi:
         win32_set_clipboard_text(primary)
 
         try:
-            with open(os.path.join(DIR_A, "my_ip.txt"), "w", encoding="utf-8") as f:
+            game_dir = find_game_directory()
+            with open(os.path.join(game_dir, "my_ip.txt"), "w", encoding="utf-8") as f:
                 f.write("\n".join(ips))
         except Exception:
             pass

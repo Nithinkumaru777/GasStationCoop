@@ -63,40 +63,44 @@ local function DumpWorldState()
     end)
 end
 
--- Host Listen Server
-local function HostListenServer()
+-- Network Relay Activation (Background UDP State Broker)
+local function StartHostRelay()
     SafeExec(function()
-        Log("Starting listen server...")
-        local Kismet = StaticFindObject("/Script/Engine.Default__KismetSystemLibrary")
-        local World = GetCurrentWorld()
-        if Kismet and Kismet:IsValid() and World and World:IsValid() then
-            local MapName = World:GetFullName()
-            local match = MapName:match("/Game/[%w_/]+")
-            if not match then match = "/Game/Maps/MenuMap/MainMenu4/Menu_Map4" end
-            local Cmd = "open " .. match .. "?listen"
-            Log("Executing: " .. Cmd)
-            Kismet:ExecuteConsoleCommand(World, Cmd, nil)
-        end
+        Log("[CO-OP] Starting host relay on UDP port 7777...")
+        os.execute("cmd /c if not exist net mkdir net")
+        os.execute('start "" pythonw "gss_relay.py" --mode host --port 7777 --netdir "net"')
     end)
 end
 
--- Join Local Host
-local function JoinServer(ip)
-    local target = ip or "127.0.0.1:7777"
+local function StartGuestRelay(targetIP)
     SafeExec(function()
-        Log("Connecting to server: " .. target)
-        local Kismet = StaticFindObject("/Script/Engine.Default__KismetSystemLibrary")
-        local World = GetCurrentWorld()
-        if Kismet and Kismet:IsValid() and World and World:IsValid() then
-            local Cmd = "open " .. target
-            Log("Executing: " .. Cmd)
-            Kismet:ExecuteConsoleCommand(World, Cmd, nil)
-        end
+        local ip = targetIP or "127.0.0.1"
+        Log(string.format("[CO-OP] Starting client relay connecting to %s:7777...", ip))
+        os.execute("cmd /c if not exist net mkdir net")
+        os.execute(string.format('start "" pythonw "gss_relay.py" --mode client --connect %s --port 7777 --netdir "net"', ip))
     end)
 end
 
 -- Role Management
 local Role = nil
+
+local function ReadSavedRole()
+    local f = io.open("role.txt", "r") or io.open("net/role.txt", "r") or io.open("Mods/GasStationCoop/role.txt", "r")
+    if f then
+        local c = f:read("*all")
+        f:close()
+        if c then
+            local r = c:match("(%a+)")
+            if r and (r == "host" or r == "guest") then
+                Role = r
+                Log(string.format("[ROLE] Pre-selected role loaded: '%s'", Role))
+                return Role
+            end
+        end
+    end
+    return nil
+end
+ReadSavedRole()
 
 local function LockAndSetRole(wanted)
     if Role == wanted then return true end
@@ -422,11 +426,13 @@ end
 local function ExecuteHostGame(menu)
     Log("[CO-OP] >>> OPTION 1: HOST A WORLD <<<")
     LockAndSetRole("host")
-    HostListenServer()
+    StartHostRelay()
     if menu and menu:IsValid() then
         if menu.ContinueButton and menu.ContinueButton:IsValid() and menu.bCanBeLoaded then
+            Log("[CO-OP] Host loading station via Continue...")
             menu:BndEvt__ContinueButton_K2Node_ComponentBoundEvent_1_OnClicked__DelegateSignature()
         else
+            Log("[CO-OP] Host starting station via StartNewGame...")
             menu:StartNewGame()
         end
     end
@@ -438,8 +444,7 @@ local function ExecuteJoinGame(menu, promptForIP)
     local targetIP = "127.0.0.1"
 
     if promptForIP then
-        -- Silent GUI dialog with pythonw (no black cmd window)
-        os.execute('start /wait pythonw "ask_ip.py"')
+        os.execute('start /wait pythonw "coop_menu.py"')
     end
 
     local f = io.open("host_ip.txt", "r") or io.open("net/host_ip.txt", "r")
@@ -453,11 +458,13 @@ local function ExecuteJoinGame(menu, promptForIP)
 
     Log(string.format("[CO-OP] Connecting to Host at %s:7777...", targetIP))
     LockAndSetRole("guest")
-    JoinServer(targetIP)
+    StartGuestRelay(targetIP)
     if menu and menu:IsValid() then
         if menu.ContinueButton and menu.ContinueButton:IsValid() and menu.bCanBeLoaded then
+            Log("[CO-OP] Guest loading station via Continue...")
             menu:BndEvt__ContinueButton_K2Node_ComponentBoundEvent_1_OnClicked__DelegateSignature()
         else
+            Log("[CO-OP] Guest starting station via StartNewGame...")
             menu:StartNewGame()
         end
     end
@@ -584,6 +591,30 @@ pcall(function()
     end)
 end)
 
+local AutoEntered = false
+local function CheckAutoEnterWorld()
+    if AutoEntered then return end
+    if Role ~= "host" and Role ~= "guest" then return end
+
+    local World = GetCurrentWorld()
+    if not World or not World:IsValid() or not World:GetFullName():lower():find("menu") then return end
+
+    local menus = FindAllOf("MainMenuOverviewWidgetBP_C") or {}
+    if #menus > 0 and menus[1]:IsValid() then
+        local menu = menus[1]
+        AutoEntered = true
+        Log(string.format("[CO-OP] Auto-entering station world as '%s'...", Role))
+
+        ExecuteInGameThread(function()
+            if Role == "host" then
+                ExecuteHostGame(menu)
+            elseif Role == "guest" then
+                ExecuteJoinGame(menu, false)
+            end
+        end)
+    end
+end
+
 -- Dedicated Hotkeys:
 -- F9 = OPTION 1: HOST A WORLD
 RegisterKeyBind(Key.F9, function()
@@ -606,6 +637,7 @@ RegisterKeyBind(Key.F7, function() DumpWorldState() end)
 LoopAsync(1500, function()
     EnsureBackgroundRelay()
     UpdateMainMenuUI()
+    CheckAutoEnterWorld()
     return false
 end)
 
