@@ -206,8 +206,7 @@ def ensure_starter_saves(game_dir):
                     if sav_file.endswith(".sav"):
                         src_f = os.path.join(src_saves, sav_file)
                         dst_f = os.path.join(tdir, sav_file)
-                        if not os.path.exists(dst_f):
-                            shutil.copy2(src_f, dst_f)
+                        shutil.copy2(src_f, dst_f)
             except Exception:
                 pass
 

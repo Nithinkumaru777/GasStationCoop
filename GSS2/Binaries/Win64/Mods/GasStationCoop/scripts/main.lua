@@ -221,6 +221,20 @@ local AnimPaths = {
     idle = "/Game/Assets/Characters/Animations/NPCs/Movement/Cleaning/IPC/BaseNPC_Standing_Idle_00.BaseNPC_Standing_Idle_00"
 }
 
+-- Height of the floating name tag above the puppet's feet (tuning knob).
+local NAMETAG_HEIGHT = 200.0
+
+-- StaticFindObject only sees assets already in memory; LoadAsset pulls them from the pak.
+local function FindOrLoad(path)
+    local o = StaticFindObject(path)
+    if (not o or not o:IsValid()) and LoadAsset then
+        pcall(function() o = LoadAsset(path) end)
+    end
+    if o and o:IsValid() then return o end
+    Log("[CO-OP] Asset not found: " .. path)
+    return nil
+end
+
 -- ============================================================
 -- Crash-Proof Actor Spawner (No Cheat Commands)
 -- ============================================================
@@ -269,6 +283,8 @@ local IsPuppetWalking = false
 local LastPuppetX = 0
 local LastPuppetY = 0
 local LastSpawnAttempt = 0
+-- Height of the mesh pivot (feet) above the actor root; Biker_ActorBp's Body is offset inside the BP
+local PuppetMeshOffsetZ = 0.0
 
 local function SpawnRemotePuppet(World, loc, rot)
     if not World or not World:IsValid() then return nil end
@@ -306,28 +322,47 @@ local function SpawnRemotePuppet(World, loc, rot)
         local skComp = newPuppet.SkeletalMeshComponent or newPuppet.Body
         if skComp and skComp:IsValid() then
             skComp:SetCollisionEnabled(0)
-            local bodyMesh = StaticFindObject(charDef.body)
-            if bodyMesh and bodyMesh:IsValid() then
+            local bodyMesh = FindOrLoad(charDef.body)
+            if bodyMesh then
                 skComp:SetSkeletalMesh(bodyMesh, true)
             end
             skComp:SetWorldScale3D({X = 1.0, Y = 1.0, Z = 1.0})
 
-            -- Pre-cache animations
-            CachedWalkAnim = StaticFindObject(AnimPaths.walk)
-            CachedIdleAnim = StaticFindObject(AnimPaths.idle)
-            if CachedIdleAnim and CachedIdleAnim:IsValid() then
+            -- Biker's head is a separate skeletal mesh: make it follow the body's pose
+            local head = newPuppet.Head
+            if head and head:IsValid() then
+                pcall(function() head:SetMasterPoseComponent(skComp, true) end)
+            end
+
+            -- Pre-cache animations (PlayAnimation switches the component to SingleNode mode itself)
+            CachedWalkAnim = FindOrLoad(AnimPaths.walk)
+            CachedIdleAnim = FindOrLoad(AnimPaths.idle)
+            if CachedIdleAnim then
+                pcall(function()
+                    local animSkel = CachedIdleAnim.Skeleton
+                    local meshSkel = skComp.SkeletalMesh.Skeleton
+                    if animSkel and meshSkel and animSkel:GetFullName() ~= meshSkel:GetFullName() then
+                        Log(string.format("[CO-OP] WARNING: anim skeleton %s != mesh skeleton %s (will T-pose)", animSkel:GetFullName(), meshSkel:GetFullName()))
+                    end
+                end)
                 pcall(function() skComp:PlayAnimation(CachedIdleAnim, true) end)
             end
         end
     end)
 
+    PuppetMeshOffsetZ = 0.0
+    pcall(function()
+        local skComp = newPuppet.SkeletalMeshComponent or newPuppet.Body
+        PuppetMeshOffsetZ = skComp:K2_GetComponentLocation().Z - newPuppet:K2_GetActorLocation().Z
+    end)
+
     PuppetActor = newPuppet
-    Log(string.format("[CO-OP] Remote puppet successfully spawned: %s", PuppetActor:GetFullName()))
+    Log(string.format("[CO-OP] Remote puppet successfully spawned: %s (mesh Z offset %.1f)", PuppetActor:GetFullName(), PuppetMeshOffsetZ))
 
     -- 4. Spawn 3D World Name Tag above Puppet's head
     local tagClass = StaticFindObject("/Script/Engine.TextRenderActor")
     if tagClass and tagClass:IsValid() then
-        local tagLoc = { X = loc.X, Y = loc.Y, Z = loc.Z + 115.0 }
+        local tagLoc = { X = loc.X, Y = loc.Y, Z = loc.Z + NAMETAG_HEIGHT }
         NameTagActor = SpawnActorFromClass(World, tagClass, tagLoc, rot)
         if NameTagActor and NameTagActor:IsValid() then
             pcall(function()
@@ -364,7 +399,11 @@ local function SyncLocalPlayerState()
     local rot = player:K2_GetActorRotation()
     if not loc or not rot then return end
 
-    local stateStr = string.format("%.2f %.2f %.2f %.2f %.2f %.2f", loc.X, loc.Y, loc.Z, rot.Pitch, rot.Yaw, rot.Roll)
+    -- Actor location is the capsule centre; send feet position so the puppet stands on the ground
+    local halfHeight = 0.0
+    pcall(function() halfHeight = player.CapsuleComponent:GetScaledCapsuleHalfHeight() end)
+
+    local stateStr = string.format("%.2f %.2f %.2f %.2f %.2f %.2f", loc.X, loc.Y, loc.Z - halfHeight, rot.Pitch, rot.Yaw, rot.Roll)
     local f = io.open("net/local_player.state", "w")
     if f then
         f:write(stateStr)
@@ -398,7 +437,7 @@ local function DriveRemotePuppet()
     end
 
     if PuppetActor and PuppetActor:IsValid() then
-        local newLoc = {X = x, Y = y, Z = z}
+        local newLoc = {X = x, Y = y, Z = z - PuppetMeshOffsetZ}
         local newRot = {Pitch = pitch, Yaw = yaw, Roll = roll}
 
         -- CRITICAL CRASH FIX: Always pass empty table {} for SweepHitResult, NEVER nil!
@@ -430,7 +469,7 @@ local function DriveRemotePuppet()
 
         -- Update 3D Floating Billboard Name Tag
         if NameTagActor and NameTagActor:IsValid() then
-            local tagLoc = {X = x, Y = y, Z = z + 115.0}
+            local tagLoc = {X = x, Y = y, Z = z + NAMETAG_HEIGHT}
             local tagYaw = yaw
             local localPlayer = GetLocalPlayer()
             if localPlayer and localPlayer:IsValid() then
@@ -525,6 +564,28 @@ local function HandleCoopEvent(cmd, args)
                 end
             end
 
+        elseif cmd == "TIME" and Role == "guest" then
+            local h, m, d, tod, skyTod = args:match("(%-?%d+)%s+(%-?%d+)%s+(%-?%d+)%s+([%d.-]+)%s+([%d.-]+)")
+            if not h then return end
+            local World = GetCurrentWorld()
+            local gs = World and World.GameState
+            if gs and gs:IsValid() then
+                pcall(function()
+                    gs.TimeStruct = {Minutes = tonumber(m), Hours = tonumber(h), Days = tonumber(d), TimeOfDay = tonumber(tod)}
+                end)
+            end
+            local sky = FindFirstOf("Ultra_Dynamic_Sky_BP_Paradise_Island_C") or FindFirstOf("Ultra_Dynamic_Sky_BP_C")
+            if sky and sky:IsValid() and tonumber(skyTod) >= 0 then
+                pcall(function()
+                    sky["Animate Time of Day"] = false
+                    sky["Time of Day"] = tonumber(skyTod)
+                    local fRot = sky["Set Sun and Moon Rotation"]
+                    if fRot then fRot(sky) end
+                    local fMat = sky["Set Material Variables"]
+                    if fMat then fMat(sky) end
+                end)
+            end
+
         elseif cmd == "STATION_OPEN" then
             local isOpen = (tonumber(args) == 1)
             local worlds = FindAllOf("GSSGameState_BP_C") or FindAllOf("GSSGameState") or {}
@@ -568,6 +629,23 @@ local function SyncEconomyLoop()
             end
         end)
     end
+end
+
+-- 1 Hz Host Clock Sync (GSSGameState.TimeStruct drives the HUD clock, UDS "Time of Day" drives the sun)
+local function SyncTimeLoop()
+    if Role ~= "host" or not IsInGameplayWorld() then return end
+    SafeExec(function()
+        local World = GetCurrentWorld()
+        local gs = World and World.GameState
+        if not gs or not gs:IsValid() then return end
+        local t = gs.TimeStruct
+        local skyTod = -1.0
+        local sky = FindFirstOf("Ultra_Dynamic_Sky_BP_Paradise_Island_C") or FindFirstOf("Ultra_Dynamic_Sky_BP_C")
+        if sky and sky:IsValid() then
+            pcall(function() skyTod = sky["Time of Day"] end)
+        end
+        SendEvent(string.format("TIME %d %d %d %.3f %.3f", t.Hours, t.Minutes, t.Days, t.TimeOfDay, skyTod))
+    end)
 end
 
 -- ============================================================
@@ -765,8 +843,8 @@ local function RestoreGameplayInput()
     if pc and pc:IsValid() then
         pcall(function()
             pc.bShowMouseCursor = false
-            pc.bEnableClickEvents = false
-            pc.bEnableMouseOverEvents = false
+            pc.bEnableClickEvents = true
+            pc.bEnableMouseOverEvents = true
             pc:SetIgnoreLookInput(false)
             pc:SetIgnoreMoveInput(false)
         end)
@@ -775,6 +853,14 @@ local function RestoreGameplayInput()
             pcall(function()
                 WBP:SetInputMode_GameOnly(pc)
                 WBP:SetFocusToGameViewport()
+            end)
+        end
+        local player = GetLocalPlayer()
+        if player and player:IsValid() then
+            pcall(function()
+                if player.SetDefaultWidgetInteraction then
+                    player:SetDefaultWidgetInteraction()
+                end
             end)
         end
     end
@@ -834,6 +920,25 @@ RegisterKeyBind(Key.F8, function()
     ExecuteJoinGame(menu, true)
 end)
 
+RegisterKeyBind(Key.F7, function()
+    if not IsInGameplayWorld() then return end
+    local f = io.open("net/remote_player.state", "r")
+    if not f then return end
+    local line = f:read("*line")
+    f:close()
+    if not line or line == "" then return end
+    local x, y, z = line:match("([%d.-]+)%s+([%d.-]+)%s+([%d.-]+)")
+    if not x then return end
+    local player = GetLocalPlayer()
+    if player and player:IsValid() then
+        ExecuteInGameThread(function()
+            local targetLoc = {X = tonumber(x) + 100.0, Y = tonumber(y) + 100.0, Z = tonumber(z) + 10.0}
+            player:K2_SetActorLocation(targetLoc, false, {}, false)
+            Log(string.format("[CO-OP] Teleported to partner at (%.1f, %.1f, %.1f)", targetLoc.X, targetLoc.Y, targetLoc.Z))
+        end)
+    end
+end)
+
 -- Loops
 LoopAsync(50, function()
     SafeExec(function()
@@ -848,6 +953,7 @@ LoopAsync(1000, function()
     EnsureBackgroundRelay()
     UpdateInGameHUD()
     SyncEconomyLoop()
+    SyncTimeLoop()
 
     -- Check if world transitioned
     local World = GetCurrentWorld()
@@ -857,6 +963,8 @@ LoopAsync(1000, function()
             if not HasEnteredGameplay then
                 HasEnteredGameplay = true
                 LevelLoadInProgress = false
+                -- Console "open DemoMapka" bypasses the menu's own teardown, leaving the viewport in UI-only input
+                ExecuteInGameThread(RestoreGameplayInput)
                 Log("[CO-OP] *** CONNECTED TO GAS STATION WORLD! MULTIPLAYER SYNC RUNNING. ***")
             end
             return false
