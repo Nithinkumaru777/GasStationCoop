@@ -235,11 +235,48 @@ DefaultInputBindingsVersion=1.0.0.5
         except Exception:
             pass
 
+def ensure_starter_saves(game_dir):
+    """Guarantees that a valid Starter Save exists on both Host and Guest machines,
+    so ContinueButton is always enabled and the guest loads straight into the gas station."""
+    cur_dir = os.path.dirname(os.path.abspath(__file__))
+    src_saves = os.path.join(cur_dir, "SaveGames")
+    if not os.path.exists(src_saves):
+        alt = os.path.join(game_dir, "SaveGames")
+        if os.path.exists(alt):
+            src_saves = alt
+
+    target_dirs = []
+    appdata = os.getenv("LOCALAPPDATA")
+    if appdata:
+        target_dirs.append(os.path.join(appdata, "GSS2", "Saved", "SaveGames"))
+
+    target_dirs.append(os.path.join(game_dir, "GSS2", "Saved", "SaveGames"))
+
+    if "coop-sandbox" in game_dir:
+        target_dirs.append(r"D:\coop-sandbox\gss\userA\Saved__coopA\SaveGames")
+        target_dirs.append(r"D:\coop-sandbox\gss\userB\Saved__coopB\SaveGames")
+
+    if os.path.exists(src_saves):
+        import shutil
+        for tdir in target_dirs:
+            try:
+                os.makedirs(tdir, exist_ok=True)
+                for sav_file in os.listdir(src_saves):
+                    if sav_file.endswith(".sav"):
+                        src_f = os.path.join(src_saves, sav_file)
+                        dst_f = os.path.join(tdir, sav_file)
+                        if not os.path.exists(dst_f):
+                            shutil.copy2(src_f, dst_f)
+            except Exception:
+                pass
+
+
 def launch_game_process(role, target_ip="127.0.0.1"):
     game_dir = find_game_directory()
     exe_path = os.path.join(game_dir, "GSS2-Win64-Shipping.exe")
     scr_w, scr_h = get_screen_metrics()
     ensure_optimal_game_settings(game_dir, scr_w, scr_h)
+    ensure_starter_saves(game_dir)
 
     # 1. Update role.txt
     for path in [
@@ -269,6 +306,13 @@ def launch_game_process(role, target_ip="127.0.0.1"):
 
     # 3. Launch silent background relay via pythonw
     relay_script = os.path.join(game_dir, "gss_relay.py")
+    if not os.path.exists(relay_script):
+        cur_dir = os.path.dirname(os.path.abspath(__file__))
+        alt_relay = os.path.join(cur_dir, "gss_relay.py")
+        if os.path.exists(alt_relay):
+            import shutil
+            shutil.copy2(alt_relay, relay_script)
+
     if os.path.exists(relay_script):
         if role == "host":
             subprocess.Popen(

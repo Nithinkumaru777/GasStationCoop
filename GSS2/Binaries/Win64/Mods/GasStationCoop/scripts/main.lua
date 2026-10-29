@@ -205,6 +205,8 @@ local function DriveRemotePuppet()
                                 PuppetActor.SkeletalMeshComponent:SetSkeletalMesh(skMesh, true)
                                 local scale = localPlayer.Mesh:K2_GetComponentScale()
                                 if scale then PuppetActor.SkeletalMeshComponent:SetWorldScale3D(scale) end
+                                pcall(function() PuppetActor:SetActorEnableCollision(false) end)
+                                pcall(function() PuppetActor.SkeletalMeshComponent:SetCollisionEnabled(0) end)
                             end)
                         end
                     end
@@ -422,20 +424,96 @@ local function UpdateMainMenuUI()
     end
 end
 
+-- ============================================================
+-- Robust Multi-Stage Station Level Entry Layer
+-- ============================================================
+local HasEnteredGameplay = false
+local LevelAttemptCount = 0
+local LastAttemptTime = 0
+
+local function TryTriggerLevelLoad(menu)
+    if HasEnteredGameplay then return true end
+
+    -- Check if we are already in gameplay
+    local World = GetCurrentWorld()
+    if World and World:IsValid() then
+        local wname = World:GetFullName():lower()
+        if not wname:find("menu") and GetLocalPlayer() ~= nil then
+            HasEnteredGameplay = true
+            Log("[CO-OP] *** PLAYER SUCCESSFULLY IN STATION GAMEPLAY! ***")
+            return true
+        end
+    end
+
+    if not menu or not menu:IsValid() then
+        local menus = FindAllOf("MainMenuOverviewWidgetBP_C") or {}
+        if #menus > 0 and menus[1]:IsValid() then
+            menu = menus[1]
+        end
+    end
+
+    LevelAttemptCount = LevelAttemptCount + 1
+    Log(string.format("[CO-OP] Station Level Load Attempt #%d (Role: %s)...", LevelAttemptCount, tostring(Role)))
+
+    if menu and menu:IsValid() then
+        -- Stage 1: If Continue button is ready (bCanBeLoaded == true), click it!
+        if menu.bCanBeLoaded and menu.ContinueButton and menu.ContinueButton:IsValid() then
+            Log("[CO-OP] [STAGE 1] Save slot confirmed! Clicking Continue to load Desert Station...")
+            local s, err = pcall(function()
+                menu:BndEvt__ContinueButton_K2Node_ComponentBoundEvent_1_OnClicked__DelegateSignature()
+            end)
+            if s then return true end
+            Log("[CO-OP] ContinueButton call failed: " .. tostring(err))
+        end
+
+        -- Stage 2: Direct Map Selection function on Menu Overview
+        Log("[CO-OP] [STAGE 2] Calling menu:OnMapSelected('DemoMapka')...")
+        local s2, err2 = pcall(function()
+            menu:OnMapSelected("DemoMapka")
+        end)
+        if s2 then return true end
+
+        -- Stage 3: If MapSelectionWidget is active, click first map (Route 66 / Desert Station)
+        if menu.MapSelectionWidget and menu.MapSelectionWidget:IsValid() then
+            Log("[CO-OP] [STAGE 3] MapSelectionWidget active! Clicking first map button...")
+            pcall(function()
+                local buttons = menu.MapSelectionWidget.MapsButtons
+                if buttons and #buttons > 0 and buttons[1]:IsValid() then
+                    buttons[1]:GamePadClick()
+                    buttons[1]:BndEvt__WBP_MapSelectionButton_Button_22_K2Node_ComponentBoundEvent_0_OnButtonClickedEvent__DelegateSignature()
+                end
+            end)
+            return true
+        end
+
+        -- Stage 4: New Game Button
+        Log("[CO-OP] [STAGE 4] Triggering NewGameButton...")
+        pcall(function()
+            menu:BndEvt__NewGameButton_K2Node_ComponentBoundEvent_2_OnClicked__DelegateSignature()
+            menu:StartNewGame()
+        end)
+    end
+
+    -- Stage 5: Direct Unreal Console fallback
+    if LevelAttemptCount >= 3 and World and World:IsValid() then
+        Log("[CO-OP] [STAGE 5] Direct console fallback: loading DemoMapka...")
+        local Kismet = StaticFindObject("/Script/Engine.Default__KismetSystemLibrary")
+        if Kismet and Kismet:IsValid() then
+            pcall(function()
+                Kismet:ExecuteConsoleCommand(World, "open DemoMapka", nil)
+            end)
+        end
+    end
+
+    return false
+end
+
 -- Option 1: Host a World Action
 local function ExecuteHostGame(menu)
     Log("[CO-OP] >>> OPTION 1: HOST A WORLD <<<")
     LockAndSetRole("host")
     StartHostRelay()
-    if menu and menu:IsValid() then
-        if menu.ContinueButton and menu.ContinueButton:IsValid() and menu.bCanBeLoaded then
-            Log("[CO-OP] Host loading station via Continue...")
-            menu:BndEvt__ContinueButton_K2Node_ComponentBoundEvent_1_OnClicked__DelegateSignature()
-        else
-            Log("[CO-OP] Host starting station via StartNewGame...")
-            menu:StartNewGame()
-        end
-    end
+    TryTriggerLevelLoad(menu)
 end
 
 -- Option 2: Join a World Action
@@ -459,15 +537,7 @@ local function ExecuteJoinGame(menu, promptForIP)
     Log(string.format("[CO-OP] Connecting to Host at %s:7777...", targetIP))
     LockAndSetRole("guest")
     StartGuestRelay(targetIP)
-    if menu and menu:IsValid() then
-        if menu.ContinueButton and menu.ContinueButton:IsValid() and menu.bCanBeLoaded then
-            Log("[CO-OP] Guest loading station via Continue...")
-            menu:BndEvt__ContinueButton_K2Node_ComponentBoundEvent_1_OnClicked__DelegateSignature()
-        else
-            Log("[CO-OP] Guest starting station via StartNewGame...")
-            menu:StartNewGame()
-        end
-    end
+    TryTriggerLevelLoad(menu)
 end
 
 -- Hook Main Menu DLC Button Click to open the 2-Option Selector Dialog (SILENT GUI)
@@ -591,30 +661,6 @@ pcall(function()
     end)
 end)
 
-local AutoEntered = false
-local function CheckAutoEnterWorld()
-    if AutoEntered then return end
-    if Role ~= "host" and Role ~= "guest" then return end
-
-    local World = GetCurrentWorld()
-    if not World or not World:IsValid() or not World:GetFullName():lower():find("menu") then return end
-
-    local menus = FindAllOf("MainMenuOverviewWidgetBP_C") or {}
-    if #menus > 0 and menus[1]:IsValid() then
-        local menu = menus[1]
-        AutoEntered = true
-        Log(string.format("[CO-OP] Auto-entering station world as '%s'...", Role))
-
-        ExecuteInGameThread(function()
-            if Role == "host" then
-                ExecuteHostGame(menu)
-            elseif Role == "guest" then
-                ExecuteJoinGame(menu, false)
-            end
-        end)
-    end
-end
-
 -- Dedicated Hotkeys:
 -- F9 = OPTION 1: HOST A WORLD
 RegisterKeyBind(Key.F9, function()
@@ -633,11 +679,35 @@ end)
 RegisterKeyBind(Key.F6, function() RunSDKDump() end)
 RegisterKeyBind(Key.F7, function() DumpWorldState() end)
 
--- Menu update loop
-LoopAsync(1500, function()
+-- Menu update & continuous level enter loop (runs every 1000ms)
+LoopAsync(1000, function()
     EnsureBackgroundRelay()
     UpdateMainMenuUI()
-    CheckAutoEnterWorld()
+
+    -- Check if we are already in gameplay
+    local World = GetCurrentWorld()
+    if World and World:IsValid() then
+        local wname = World:GetFullName():lower()
+        if not wname:find("menu") and GetLocalPlayer() ~= nil then
+            if not HasEnteredGameplay then
+                HasEnteredGameplay = true
+                Log("[CO-OP] *** CONNECTED TO GAS STATION WORLD! MULTIPLAYER SYNC RUNNING. ***")
+            end
+            return false
+        end
+    end
+
+    -- If still in menu and role is host or guest, attempt level entry
+    if (Role == "host" or Role == "guest") and not HasEnteredGameplay then
+        local now = os.time()
+        if now - LastAttemptTime >= 1 then
+            LastAttemptTime = now
+            ExecuteInGameThread(function()
+                TryTriggerLevelLoad(nil)
+            end)
+        end
+    end
+
     return false
 end)
 

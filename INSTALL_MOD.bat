@@ -41,17 +41,30 @@ if not exist "%GSS_DIR%\GSS2\Binaries\Win64" (
 )
 
 echo.
-echo [1/3] Copying UE4SS and Co-op Mod files...
+echo [1/4] Copying UE4SS and Co-op Mod files...
 xcopy /E /I /Y "%~dp0GSS2" "%GSS_DIR%\GSS2" >nul
 
-echo [2/3] Installing Background Network Relay and Menus...
-copy /Y "%~dp0gss_relay.py" "%GSS_DIR%\GSS2\Binaries\Win64\" >nul
-copy /Y "%~dp0coop_menu.py" "%GSS_DIR%\GSS2\Binaries\Win64\" >nul
-copy /Y "%~dp0ask_ip.py" "%GSS_DIR%\GSS2\Binaries\Win64\" >nul
+echo [2/4] Installing Starter Station Save (Enables Instant Level Entry)...
+if not exist "%LOCALAPPDATA%\GSS2\Saved\SaveGames" mkdir "%LOCALAPPDATA%\GSS2\Saved\SaveGames"
+if not exist "%GSS_DIR%\GSS2\Saved\SaveGames" mkdir "%GSS_DIR%\GSS2\Saved\SaveGames"
+if exist "%~dp0SaveGames" (
+    copy /Y "%~dp0SaveGames\*.sav" "%LOCALAPPDATA%\GSS2\Saved\SaveGames\" >nul
+    copy /Y "%~dp0SaveGames\*.sav" "%GSS_DIR%\GSS2\Saved\SaveGames\" >nul
+)
 
-echo [3/3] Setting up Universal In-Game Auto-Discovery...
-echo auto> "%GSS_DIR%\GSS2\Binaries\Win64\role.txt"
-echo auto> "%GSS_DIR%\GSS2\Binaries\Win64\Mods\GasStationCoop\role.txt"
+echo [3/4] Installing Route 66 Launcher & Background Relay...
+copy /Y "%~dp0play_coop.py" "%GSS_DIR%\GSS2\Binaries\Win64\" >nul
+copy /Y "%~dp0coop_menu.py" "%GSS_DIR%\GSS2\Binaries\Win64\" >nul
+copy /Y "%~dp0gss_relay.py" "%GSS_DIR%\GSS2\Binaries\Win64\" >nul
+copy /Y "%~dp0play_coop.py" "%GSS_DIR%\" >nul
+copy /Y "%~dp0coop_menu.py" "%GSS_DIR%\" >nul
+copy /Y "%~dp0gss_relay.py" "%GSS_DIR%\" >nul
+
+echo [4/4] Creating Desktop Shortcut...
+set DESKTOP_DIR=%USERPROFILE%\Desktop
+echo @echo off > "%DESKTOP_DIR%\Play Gas Station Co-op.bat"
+echo cd /d "%GSS_DIR%\GSS2\Binaries\Win64" >> "%DESKTOP_DIR%\Play Gas Station Co-op.bat"
+echo start "" pythonw play_coop.py >> "%DESKTOP_DIR%\Play Gas Station Co-op.bat"
 
 echo.
 echo ============================================================

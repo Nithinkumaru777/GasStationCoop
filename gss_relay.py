@@ -374,6 +374,28 @@ def main():
     netdir = os.path.abspath(args.netdir)
     os.makedirs(netdir, exist_ok=True)
 
+    # Prevent duplicate relays on the same netdir
+    pid_file = os.path.join(netdir, "relay.pid")
+    try:
+        if os.path.exists(pid_file):
+            with open(pid_file, "r") as f:
+                old_pid = int(f.read().strip())
+            if old_pid != os.getpid():
+                import ctypes
+                PROCESS_QUERY_INFORMATION = 0x0400
+                handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_INFORMATION, False, old_pid)
+                if handle:
+                    ctypes.windll.kernel32.CloseHandle(handle)
+                    sys.exit(0)
+    except Exception:
+        pass
+
+    try:
+        with open(pid_file, "w") as f:
+            f.write(str(os.getpid()))
+    except Exception:
+        pass
+
     if args.mode == "host":
         relay = NetworkRelayHost(netdir=netdir, port=args.port)
         relay.start()

@@ -41,29 +41,43 @@ if not exist "%GSS_DIR%\GSS2\Binaries\Win64" (
 )
 
 echo.
-echo [1/3] Copying UE4SS and Co-op Mod files...
+echo [1/4] Copying UE4SS and Co-op Mod files...
 xcopy /E /I /Y "%~dp0GSS2" "%GSS_DIR%\GSS2" >nul
 
-echo [2/3] Copying Network Relay and Launchers...
-copy /Y "%~dp0START_COOP_CLIENT.bat" "%GSS_DIR%\GSS2\Binaries\Win64\" >nul
-copy /Y "%~dp0gss_relay.py" "%GSS_DIR%\GSS2\Binaries\Win64\" >nul
+echo [2/4] Installing Starter Station Save (Enables Instant Level Entry)...
+if not exist "%LOCALAPPDATA%\GSS2\Saved\SaveGames" mkdir "%LOCALAPPDATA%\GSS2\Saved\SaveGames"
+if not exist "%GSS_DIR%\GSS2\Saved\SaveGames" mkdir "%GSS_DIR%\GSS2\Saved\SaveGames"
+if exist "%~dp0SaveGames" (
+    copy /Y "%~dp0SaveGames\*.sav" "%LOCALAPPDATA%\GSS2\Saved\SaveGames\" >nul
+    copy /Y "%~dp0SaveGames\*.sav" "%GSS_DIR%\GSS2\Saved\SaveGames\" >nul
+)
 
-echo [3/3] Creating Desktop Shortcut...
+echo [3/4] Copying Route 66 Launcher & Network Relay...
+copy /Y "%~dp0play_coop.py" "%GSS_DIR%\GSS2\Binaries\Win64\" >nul
+copy /Y "%~dp0coop_menu.py" "%GSS_DIR%\GSS2\Binaries\Win64\" >nul
+copy /Y "%~dp0gss_relay.py" "%GSS_DIR%\GSS2\Binaries\Win64\" >nul
+copy /Y "%~dp0play_coop.py" "%GSS_DIR%\" >nul
+copy /Y "%~dp0coop_menu.py" "%GSS_DIR%\" >nul
+copy /Y "%~dp0gss_relay.py" "%GSS_DIR%\" >nul
+
+echo [4/4] Creating Desktop Shortcut...
 set DESKTOP_DIR=%USERPROFILE%\Desktop
-echo @echo off > "%DESKTOP_DIR%\Play GSS Co-op (Join Friend).bat"
-echo cd /d "%GSS_DIR%\GSS2\Binaries\Win64" >> "%DESKTOP_DIR%\Play GSS Co-op (Join Friend).bat"
-echo call START_COOP_CLIENT.bat >> "%DESKTOP_DIR%\Play GSS Co-op (Join Friend).bat"
+echo @echo off > "%DESKTOP_DIR%\Play Gas Station Co-op.bat"
+echo cd /d "%GSS_DIR%\GSS2\Binaries\Win64" >> "%DESKTOP_DIR%\Play Gas Station Co-op.bat"
+echo start "" pythonw play_coop.py >> "%DESKTOP_DIR%\Play Gas Station Co-op.bat"
 
 echo.
 echo ============================================================
-echo  [INSTALL COMPLETE!]
-echo  A shortcut named "Play GSS Co-op (Join Friend).bat"
-echo  has been created on your Desktop!
+echo   ✨ INSTALLATION COMPLETE! CO-OP MOD IS READY! ✨
+echo   Lead Architect & Creator: Nithin Kumar (@Nithinkumaru777)
 echo.
-echo  To play:
-echo  1. Get the Host IP from your friend.
-echo  2. Double-click the desktop shortcut.
-echo  3. Enter the IP, and enjoy co-op!
+echo   A shortcut "Play Gas Station Co-op.bat" has been placed
+echo   on your Desktop!
+echo.
+echo   How to play:
+echo   1. Double-click "Play Gas Station Co-op.bat"
+echo   2. Choose "JOIN A WORLD" (or one-click connect if on same Wi-Fi)
+echo   3. The launcher will automatically load you straight into the station!
 echo ============================================================
 echo.
 pause
