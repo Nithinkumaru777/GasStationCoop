@@ -136,16 +136,15 @@ local function JoinServer(ip)
 end
 
 -- ============================================================
--- Dynamic Role Management (Minecraft-Style In-Game Selection)
+-- Dynamic Role Management (2 Options: Host World / Join World)
 -- ============================================================
-local Role = nil -- nil until player clicks Host or Join in menu
+local Role = nil -- nil until player selects Host or Join
 
 local function LockAndSetRole(wanted)
     if Role == wanted then return true end
     Role = wanted
     Log(string.format("[ROLE] Process role committed to '%s'!", Role))
 
-    -- Persist to role.txt and net/role.txt so background relay detects it immediately
     local f1 = io.open("role.txt", "w")
     if f1 then f1:write(Role .. "\n") f1:close() end
 
@@ -170,19 +169,7 @@ local function RunSDKDump()
     end)
 end
 
--- Check for automated dump trigger
-local dumpTriggerFile = "run_dump.txt"
-local fDump = io.open(dumpTriggerFile, "r")
-if fDump then
-    fDump:close()
-    os.remove(dumpTriggerFile)
-    LoopAsync(3000, function()
-        RunSDKDump()
-        return true
-    end)
-end
-
--- Auto Network & Multi-instance Status Monitor
+-- Auto Network Monitor
 local function MonitorNetwork()
     LoopAsync(4000, function()
         SafeExec(function()
@@ -263,7 +250,6 @@ local function DriveRemotePuppet()
         local World = GetCurrentWorld()
         if not World or not World:IsValid() then return end
 
-        -- Adopt or summon puppet if missing (only in gameplay world with 3s cooldown)
         if not PuppetActor or not PuppetActor:IsValid() then
             local now = os.time()
             if IsInGameplayWorld() and (now - lastPuppetSpawnAttempt >= 3) then
@@ -490,7 +476,7 @@ LoopAsync(3000, function()
 end)
 
 -- ============================================================
--- In-Game Co-op Server Browser & Main Menu Integration
+-- In-Game Co-op Menu Integration (2 Options: Host World / Join World)
 -- ============================================================
 local DiscoveredServerName = "Scanning for LAN Server..."
 local DiscoveredServerIP = ""
@@ -518,7 +504,7 @@ local function EnsureBackgroundRelay()
     RelayLaunched = true
     SafeExec(function()
         os.execute("cmd /c if not exist net mkdir net")
-        Log("[IN-GAME] Starting background Co-op LAN Daemon...")
+        Log("[IN-GAME] Starting background Co-op Relay Daemon...")
         os.execute('start /b python "gss_relay.py" --mode auto --port 7777 --netdir "net"')
     end)
 end
@@ -533,27 +519,19 @@ local function UpdateMainMenuUI()
             local btn = menu.DLCButton
             pcall(function()
                 if Role == "host" then
-                    btn.Text = "CO-OP SERVER (HOSTING)"
+                    btn.Text = "CO-OP: HOSTING ACTIVE"
                     if btn.ButtonText and btn.ButtonText:IsValid() then
-                        btn.ButtonText:SetText("CO-OP SERVER (HOSTING)")
+                        btn.ButtonText:SetText("CO-OP: HOSTING ACTIVE")
                     end
                 elseif Role == "guest" then
-                    btn.Text = "CO-OP (CONNECTED)"
+                    btn.Text = "CO-OP: CONNECTED"
                     if btn.ButtonText and btn.ButtonText:IsValid() then
-                        btn.ButtonText:SetText("CO-OP (CONNECTED)")
+                        btn.ButtonText:SetText("CO-OP: CONNECTED")
                     end
                 else
-                    -- Dynamic Minecraft-Style Selection
-                    if ServerStatus == "ONLINE" and DiscoveredServerIP ~= "" then
-                        btn.Text = "JOIN: " .. DiscoveredServerName:upper()
-                        if btn.ButtonText and btn.ButtonText:IsValid() then
-                            btn.ButtonText:SetText("JOIN: " .. DiscoveredServerName:upper())
-                        end
-                    else
-                        btn.Text = "HOST CO-OP GAME"
-                        if btn.ButtonText and btn.ButtonText:IsValid() then
-                            btn.ButtonText:SetText("HOST CO-OP GAME")
-                        end
+                    btn.Text = "CO-OP: HOST OR JOIN"
+                    if btn.ButtonText and btn.ButtonText:IsValid() then
+                        btn.ButtonText:SetText("CO-OP: HOST OR JOIN")
                     end
                 end
                 btn:SetupButtonText()
@@ -561,7 +539,7 @@ local function UpdateMainMenuUI()
         end
     end
 
-    -- Draw Minecraft-style on-screen banner in Main Menu
+    -- Draw Main Menu HUD Banner with both options clearly presented
     local World = GetCurrentWorld()
     if World and World:IsValid() and World:GetFullName():lower():find("menu") then
         local Kismet = StaticFindObject("/Script/Engine.Default__KismetSystemLibrary")
@@ -569,13 +547,11 @@ local function UpdateMainMenuUI()
             local banner = ""
             local color = {R = 0.0, G = 1.0, B = 0.5, A = 1.0}
             if Role == "host" then
-                banner = "[CO-OP HOST] Server Active! Friends can detect and join your Gas Station now."
+                banner = "[CO-OP HOST ACTIVE] Station hosting on port 7777! Share your IP with friends."
             elseif Role == "guest" then
-                banner = string.format("[CO-OP GUEST] Connected to '%s' (%s:7777)! Enjoy Co-op!", DiscoveredServerName, DiscoveredServerIP)
-            elseif ServerStatus == "ONLINE" and DiscoveredServerIP ~= "" then
-                banner = string.format("✨ [LAN GAME FOUND] '%s' (%s:7777) | Click [JOIN] in menu, or press [F9] to Host!", DiscoveredServerName, DiscoveredServerIP)
+                banner = string.format("[CO-OP CONNECTED] Synced with Host! Enjoy your desert gas station!", DiscoveredServerName)
             else
-                banner = "[CO-OP BROWSER] Scanning LAN for games... Click [HOST CO-OP GAME] to host your station for friends! (F9=Host, F8=Join)"
+                banner = "⛽ GAS STATION CO-OP:  [1] HOST A WORLD (Press F9)   |   [2] JOIN A WORLD (Press F8)   |   Click 'CO-OP: HOST OR JOIN' to Play!"
                 color = {R = 1.0, G = 0.85, B = 0.2, A = 1.0}
             end
             pcall(function()
@@ -585,9 +561,9 @@ local function UpdateMainMenuUI()
     end
 end
 
--- Host Game Action
+-- Option 1: Host a World Action
 local function ExecuteHostGame(menu)
-    Log("[IN-GAME] Hosting Co-op Server! Loading Gas Station...")
+    Log("[IN-GAME] >>> OPTION 1: HOST A WORLD <<< Starting Station Host...")
     LockAndSetRole("host")
     HostListenServer()
     if menu and menu:IsValid() then
@@ -599,12 +575,30 @@ local function ExecuteHostGame(menu)
     end
 end
 
--- Join Game Action
-local function ExecuteJoinGame(menu, ip)
-    local target = ip or DiscoveredServerIP or "127.0.0.1:7777"
-    Log(string.format("[IN-GAME] Joining server '%s' (%s)...", DiscoveredServerName, target))
+-- Option 2: Join a World Action (Supports Different Wi-Fi networks & LAN)
+local function ExecuteJoinGame(menu, promptForIP)
+    Log("[IN-GAME] >>> OPTION 2: JOIN A WORLD <<<")
+    local targetIP = "127.0.0.1"
+
+    if promptForIP then
+        Log("[IN-GAME] Opening IP Dialog for Different Wi-Fi / VPN / LAN connection...")
+        os.execute('start /wait python "ask_ip.py"')
+    end
+
+    local f = io.open("host_ip.txt", "r") or io.open("net/host_ip.txt", "r")
+    if f then
+        local content = f:read("*all")
+        f:close()
+        if content and content:match("%d+%.%d+%.%d+%.%d+") then
+            targetIP = content:match("%d+%.%d+%.%d+%.%d+")
+        end
+    elseif DiscoveredServerIP ~= "" then
+        targetIP = DiscoveredServerIP
+    end
+
+    Log(string.format("[IN-GAME] Connecting to Host at %s:7777...", targetIP))
     LockAndSetRole("guest")
-    JoinServer(target)
+    JoinServer(targetIP)
     if menu and menu:IsValid() then
         if menu.ContinueButton and menu.ContinueButton:IsValid() and menu.bCanBeLoaded then
             menu:BndEvt__ContinueButton_K2Node_ComponentBoundEvent_1_OnClicked__DelegateSignature()
@@ -614,15 +608,13 @@ local function ExecuteJoinGame(menu, ip)
     end
 end
 
--- Hook Main Menu DLC Button Click to trigger Host or Join
+-- Hook Main Menu DLC Button Click to open 2-Option Selector Dialog
 pcall(function()
     RegisterHook("/Game/Blueprints/Widgets/MainMenu/MainMenuOverviewWidgetBP.MainMenuOverviewWidgetBP_C:BndEvt__MainMenuOverviewWidgetBP_DLCButton_K2Node_ComponentBoundEvent_3_OnClicked__DelegateSignature", function(self)
         SafeExec(function()
             local menu = self:get()
-            ReadServerInfo()
 
             if Role == "host" or Role == "guest" then
-                -- Already committed, continue into station
                 if menu.ContinueButton and menu.ContinueButton:IsValid() and menu.bCanBeLoaded then
                     menu:BndEvt__ContinueButton_K2Node_ComponentBoundEvent_1_OnClicked__DelegateSignature()
                 else
@@ -631,36 +623,48 @@ pcall(function()
                 return
             end
 
-            -- If an online server is detected, clicking JOIN joins that server!
-            if ServerStatus == "ONLINE" and DiscoveredServerIP ~= "" then
-                ExecuteJoinGame(menu, DiscoveredServerIP)
-            else
-                -- Otherwise, clicking HOST starts hosting your station!
+            Log("[IN-GAME MENU] Co-op Button clicked! Opening Host vs Join 2-Option Menu...")
+            os.execute('start /wait python "coop_menu.py"')
+
+            -- Check which option was selected
+            local chosenRole = nil
+            local f = io.open("role.txt", "r") or io.open("net/role.txt", "r")
+            if f then
+                local c = f:read("*all")
+                f:close()
+                if c then chosenRole = c:match("(%a+)") end
+            end
+
+            if chosenRole == "host" then
                 ExecuteHostGame(menu)
+            elseif chosenRole == "guest" then
+                ExecuteJoinGame(menu, false)
             end
         end)
     end)
 end)
 
--- Register Keybinds (F9 = Host, F8 = Join Server)
+-- Dedicated Hotkeys:
+-- F9: OPTION 1 -> HOST A WORLD
+RegisterKeyBind(Key.F9, function()
+    local menus = FindAllOf("MainMenuOverviewWidgetBP_C") or {}
+    local menu = (#menus > 0 and menus[1]:IsValid()) and menus[1] or nil
+    ExecuteHostGame(menu)
+end)
+
+-- F8: OPTION 2 -> JOIN A WORLD (Pops up IP prompt so you can connect from different Wi-Fi!)
+RegisterKeyBind(Key.F8, function()
+    local menus = FindAllOf("MainMenuOverviewWidgetBP_C") or {}
+    local menu = (#menus > 0 and menus[1]:IsValid()) and menus[1] or nil
+    ExecuteJoinGame(menu, true)
+end)
+
 RegisterKeyBind(Key.F6, function()
     RunSDKDump()
 end)
 
 RegisterKeyBind(Key.F7, function()
     DumpWorldState()
-end)
-
-RegisterKeyBind(Key.F8, function()
-    local menus = FindAllOf("MainMenuOverviewWidgetBP_C") or {}
-    local menu = (#menus > 0 and menus[1]:IsValid()) and menus[1] or nil
-    ExecuteJoinGame(menu, DiscoveredServerIP)
-end)
-
-RegisterKeyBind(Key.F9, function()
-    local menus = FindAllOf("MainMenuOverviewWidgetBP_C") or {}
-    local menu = (#menus > 0 and menus[1]:IsValid()) and menus[1] or nil
-    ExecuteHostGame(menu)
 end)
 
 -- Auto-start background relay and monitor menu every 1.5s
@@ -670,4 +674,4 @@ LoopAsync(1500, function()
     return false
 end)
 
-Log("GasStationCoop initialized. In-game Co-op Menu & Server Browser active.")
+Log("GasStationCoop initialized. In-game 2-Option Co-op Menu active (Host a World / Join a World).")

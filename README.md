@@ -5,30 +5,42 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2064--bit-lightgrey)](https://store.steampowered.com/app/1149620/Gas_Station_Simulator/)
 
-A fully functional 2-player co-op multiplayer mod for **Gas Station Simulator** (Steam AppID `1149620`, UE 4.27.2). Run your desert gas station together with friends over Local LAN or the Internet!
+A fully functional 2-player co-op multiplayer mod for **Gas Station Simulator** (Steam AppID `1149620`, UE 4.27.2). Run your desert gas station together with friends over **Same Wi-Fi (LAN)** or **Different Wi-Fi (Internet / VPN)**!
 
 ---
 
-## 🎮 100% In-Game Experience (Minecraft-Style Auto-Detect)
+## 🎮 100% In-Game Experience — Two Clear Options
 
-**No batch files, command lines, or manual IP typing required!** Both you and your friends can host or join directly from inside the game menu:
+**No batch files or console commands required!** When you launch Gas Station Simulator from Steam, click the **`CO-OP: HOST OR JOIN`** button on the Main Menu to see two distinct options:
 
-1. **Launch the Game normally** from Steam or desktop.
-2. **To Host**:
-   - In the Main Menu, click **`HOST CO-OP GAME`** (or press **`F9`**).
-   - Your station opens for co-op and begins broadcasting to your LAN/VPN!
-3. **To Join**:
-   - When your friend is hosting, open your game.
-   - The Main Menu automatically detects their server and displays:  
-     👉 **`JOIN: [FRIEND]'S GAS STATION`** (e.g. `JOIN: NITHIN'S GAS STATION`).
-   - Click it (or press **`F8`**) and you instantly join their gas station!
+### 🏠 Option 1: HOST A WORLD (or press `F9`)
+* Starts hosting your gas station world on port `7777`.
+* Automatically detects your network IP (LAN and Radmin VPN / Tailscale).
+* **Automatically copies your IP to your clipboard!**
+* Displays your IP on-screen: just press `Ctrl + V` in Discord/WhatsApp to send it to your friend!
+* Loads your station so it's open and ready for your friend.
+
+### 🌐 Option 2: JOIN A WORLD (or press `F8`)
+* Works across **different Wi-Fi networks** (different houses) as well as the same Wi-Fi!
+* Pops up a clean IP dialog box: enter or paste your friend's Host IP (e.g. Radmin VPN `26.x.x.x`, Tailscale, or LAN `192.168.x.x`).
+* Pre-fills with the last used IP so you only need to type it once!
+* Clicks OK and you instantly spawn into your friend's gas station!
+
+---
+
+## 🌐 How to Play from Different Wi-Fi (Different Houses)
+
+If you and your friend are in different houses on different Wi-Fi:
+1. Both of you download **[Radmin VPN](https://www.radmin-vpn.com/)** (100% free, no account needed) or **[Tailscale](https://tailscale.com/)**.
+2. One person clicks **Create Network** (e.g., name it `GSS-Room`) and the other clicks **Join Network**.
+3. **Host**: Opens Gas Station Simulator -> Clicks **`HOST A WORLD`** (or presses `F9`). Their Radmin IP (e.g. `26.104.55.88`) is copied to clipboard. Host pastes it to the friend.
+4. **Friend**: Opens Gas Station Simulator -> Clicks **`JOIN A WORLD`** (or presses `F8`). Pastes the host's IP and clicks OK.
+5. Boom! You are both running the gas station together over the internet!
 
 ---
 
 ## 🌟 Co-op Features
 
-* **Minecraft-Style LAN Discovery**: Background UDP beacon auto-detects games on your local network or virtual LAN (Radmin VPN / Tailscale / Hamachi) in under 10 milliseconds.
-* **In-Game Main Menu Integration**: Directly embedded buttons and on-screen HUD banners inside Gas Station Simulator's Main Menu.
 * **Real-time Player Visualization**: Both players see each other in 3D with full position and rotation streaming at 30 Hz.
 * **Shared Station Economy & Wallet**: Host-authoritative financial balance synced to the cent in real time.
 * **Fueling Subsystem Sync**: Minigame completion and customer pump servicing are replicated between players.
@@ -39,44 +51,15 @@ A fully functional 2-player co-op multiplayer mod for **Gas Station Simulator** 
 
 ---
 
-## ⚡ 1-Click Setup for Friends & Other Players
+## ⚡ 1-Click Setup for Any Player (Host or Guest)
 
-### For Any Player (You or Your Friends)
 1. Download **[`GasStationCoop_Client_Package.zip`](https://github.com/Nithinkumaru777/GasStationCoop/releases/latest)** from Releases.
 2. Extract the ZIP anywhere on your PC.
 3. Double-click **`INSTALL_MOD.bat`** (it automatically detects your Steam game folder and installs the mod files).
 4. Launch Gas Station Simulator through Steam!
-5. In the Main Menu:
-   - Click **`HOST CO-OP GAME`** to host your station.
-   - Or click **`JOIN: [HOST]'S GAS STATION`** to join your friend!
-
----
-
-## 🤖 1-Click Setup for AI Assistants (Antigravity / Claude Code / Cursor)
-
-If your friend has an AI assistant, they can simply send this prompt to their assistant:
-
-```markdown
-I want to install the Gas Station Simulator Co-op Mod.
-Repository: https://github.com/Nithinkumaru777/GasStationCoop
-
-Please set up the mod for me:
-1. Locate my Steam installation of Gas Station Simulator (AppID 1149620).
-2. Download or copy the GSS2 mod files into my GSS2\Binaries\Win64 folder.
-3. Verify that dwmapi.dll and UE4SS are installed.
-4. Launch the game from Steam — co-op auto-detection and in-game Host/Join buttons are ready in the Main Menu!
-```
-
-Detailed instructions for AI assistants can be found in [`INSTRUCTIONS_FOR_AI_AGENT.md`](INSTRUCTIONS_FOR_AI_AGENT.md).
-
----
-
-## 🌐 Playing Over the Internet (Different Locations)
-
-If you and your friend are on different Wi-Fi networks:
-1. Both of you download and open **[Radmin VPN](https://www.radmin-vpn.com/)** (free, no sign-up) or **[Tailscale](https://tailscale.com/)**.
-2. Join the same virtual room (e.g., "GSS-Coop").
-3. Launch the game — Minecraft-style LAN auto-discovery works automatically over Radmin/Tailscale!
+5. In the Main Menu, click **`CO-OP: HOST OR JOIN`**:
+   - Click **`HOST A WORLD`** to host.
+   - Click **`JOIN A WORLD`** to join your friend from any Wi-Fi.
 
 ---
 
@@ -84,27 +67,10 @@ If you and your friend are on different Wi-Fi networks:
 
 | Hotkey | Action |
 |---|---|
-| **F9** | **Host Co-op Game** (Commits to Host role & loads station) |
-| **F8** | **Join Co-op Game** (Connects to detected LAN/VPN server) |
+| **F9** | **Option 1: HOST A WORLD** (Starts server, copies IP to clipboard, enters station) |
+| **F8** | **Option 2: JOIN A WORLD** (Pops up IP prompt to connect from any Wi-Fi) |
 | **F7** | Dump World & Player State to console |
 | **F6** | Re-run SDK Dumper |
-
----
-
-## 🛠️ Architecture & Technical Details
-
-Gas Station Simulator (`GSS2-Win64-Shipping.exe`) inherits `AGSS2GameMode` from single-player `AGameModeBase`, which omits native shipping listen-server socket bindings across level travel.
-
-`GasStationCoop` implements a twin-tier architecture:
-1. **In-Process Mod Hook (UE4SS v3.0.1 Lua)**:
-   - Injected via proxy `dwmapi.dll`.
-   - Hijacks main menu buttons and draws on-screen discovery HUD.
-   - Hooks player location, rotation, and subsystem events (`FuelMiniGame_C`, `00_TrashItem_C`, `CashShop`).
-   - Reads/writes state from local `net/` directory.
-2. **High-Speed Network Broker (`gss_relay.py`)**:
-   - Out-of-process Python daemon running in the background.
-   - Broadcasts presence beacons and answers discovery probes (`GSS_BEACON` / `GSS_DISCOVER` / `GSS_OFFER`).
-   - Transmits position buffers (`POS:`) and event deltas (`EVT:`) over zero-drop UDP.
 
 ---
 
