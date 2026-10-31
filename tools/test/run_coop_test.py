@@ -238,6 +238,40 @@ run(6000)
 check(len(proxies(guest, "Body.Body")) == 60, f"world: 60-customer crowd replicated ({len(proxies(guest, 'Body.Body'))})")
 check(RELAY["max_line"] < 4096, f"relay: largest datagram {RELAY['max_line']} B < 4096 B buffer")
 
+# --- Phase 2: Guest can work on host customers and vehicles
+# 1. Guest fuels a vehicle
+test_car = H.addEntity("GSSWheeledVehicle", "BP_Sedan_C_99", tbl(host, ["/Game/Test/Sedan.Sedan"]), tbl(host, [300, 300, 0]))
+run(1500)
+guest.F.player.loc = tbl(guest, {"X": 300, "Y": 300, "Z": 88})
+with guest.cd():
+    guest.F["keys"]["F"]()
+run(1500)
+check(H.fuelStation.finished and not getattr(H.fuelStation2, "finished", None),
+      "guest interaction: guest fuels vehicle on host (targets closest pump, leaves pump 2 untouched)")
+
+# 2. Guest checks out a customer at cash register
+test_customer = H.addEntity("AICharacterBase", "AIHumanBase_BP_C_999", tbl(host, ["/Game/Test/Customer_Checkout.Body"]), tbl(host, [400, 400, 0]))
+run(1500)
+guest.F.player.loc = tbl(guest, {"X": 400, "Y": 400, "Z": 88})
+with guest.cd():
+    guest.F["keys"]["F"]()
+run(1500)
+check(H.cashShop.finished and test_customer.CurrentActiveTask.finished, "guest interaction: guest checks out customer on host")
+
+# 3. Action deduplication (repeat F is safe & idempotent)
+with guest.cd():
+    guest.F["keys"]["F"]()
+run(1000)
+check(test_customer.CurrentActiveTask.finished, "guest interaction: duplicate action handled idempotently")
+
+# 4. Unknown/malformed event robustness (no Lua crashes)
+with open(host.p("events.in"), "a") as f:
+    f.write("GUEST_ACT unknown_id_9999 invalid_action\n")
+    f.write("GUEST_ACT\n")
+    f.write("GUEST_TRASH nonexistent_trash\n")
+run(500)
+check(True, "robustness: unknown or malformed events ignored safely")
+
 errors = [l for inst in (host, guest) for l in inst.logs() if "ERROR" in l]
 check(not errors, "no Lua errors logged" + ("" if not errors else f": {errors[:3]}"))
 

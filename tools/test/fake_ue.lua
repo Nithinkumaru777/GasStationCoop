@@ -114,6 +114,8 @@ function FAKE.addEntity(class, name, meshes, loc)
     local list = FAKE.ents[class]
     local a = obj(class, "/Game/Maps/DemoMapka.DemoMapka:PersistentLevel." .. name)
     a.loc, a.yaw = {X = loc[1], Y = loc[2], Z = loc[3]}, 0
+    a.K2_GetActorLocation = function(self) return self.loc end
+    a.K2_GetActorRotation = function(self) return {Pitch = 0, Yaw = self.yaw, Roll = 0} end
     a.GetFName = function() return {ToString = function() return name end} end
     local comps = {}
     for i, m in ipairs(meshes) do
@@ -138,6 +140,21 @@ function FAKE.addEntity(class, name, meshes, loc)
     end
     table.insert(list, a)
     if class == "PlayerVehicle" then table.insert(FAKE.ents.GSSWheeledVehicle, a) end
+    if class == "AICharacterBase" then
+        a.CurrentActiveTask = obj("Task", a._path .. ".Task", {
+            TaskFinished = function(self) self.finished = true end
+        })
+        a.BeginFinishTaskCharacter = function(self, t, res, reason)
+            self.finishedReason = reason
+            if t then t.finished = true end
+        end
+    elseif class == "GSSWheeledVehicle" then
+        a.Driver = obj("AICharacterBase", a._path .. ".Driver", {
+            CurrentActiveTask = obj("Task", a._path .. ".DriverTask", {
+                TaskFinished = function(self) self.finished = true end
+            })
+        })
+    end
     return a
 end
 FAKE.aiManager = obj("GSSAIManager_BP_C", "/Game/Maps/DemoMapka.DemoMapka:PersistentLevel.GS.AIManager", {
@@ -167,6 +184,25 @@ FAKE.player = obj("PlayerCharacter_BP_C", "/Game/Maps/DemoMapka.DemoMapka:Persis
     GetWorld = function() return FAKE.world end,
 })
 FAKE.sky = obj("Ultra_Dynamic_Sky_BP_C", "/Game/Maps/DemoMapka.DemoMapka:PersistentLevel.Sky", {["Time of Day"] = 600})
+FAKE.fuelStation = obj("FuelStation_Bp_C", "/Game/Maps/DemoMapka.DemoMapka:PersistentLevel.FuelStation", {
+    loc = {X = 300, Y = 300, Z = 0},
+    K2_GetActorLocation = function(self) return self.loc end,
+    DebugFinish = function(self) self.finished = true end,
+    FinishFuelMiniGame = function(self, s, t) self.finished = true; self.spent, self.target = s, t end,
+})
+FAKE.fuelStation2 = obj("FuelStation_Bp_C", "/Game/Maps/DemoMapka.DemoMapka:PersistentLevel.FuelStation2", {
+    loc = {X = 5000, Y = 5000, Z = 0},
+    K2_GetActorLocation = function(self) return self.loc end,
+    DebugFinish = function(self) self.finished = true end,
+    FinishFuelMiniGame = function(self, s, t) self.finished = true; self.spent, self.target = s, t end,
+})
+FAKE.fuelStations = {FAKE.fuelStation, FAKE.fuelStation2}
+FAKE.cashShop = obj("CashShop", "/Game/Maps/DemoMapka.DemoMapka:PersistentLevel.CashShop", {
+    loc = {X = 400, Y = 400, Z = 0},
+    K2_GetActorLocation = function(self) return self.loc end,
+    MiniGameFinish = function(self, c) self.finished = true; self.finishedCustomer = c end,
+    FinishCashGame = function(self) self.finished = true end,
+})
 
 -- Questline: ordered objectives, FinishObjective advances
 FAKE.objectives = {}
@@ -211,6 +247,8 @@ FindAllOf = function(name)
     end
     if name == "AIManager" then return FAKE.inGame and {FAKE.aiManager} or nil end
     if name == "AISpawnPoint" then return FAKE.inGame and {FAKE.spawnPoint} or nil end
+    if name == "FuelStation_Bp_C" or name == "FuelStation" then return FAKE.inGame and FAKE.fuelStations or nil end
+    if name == "CashShop" then return FAKE.inGame and {FAKE.cashShop} or nil end
     return nil
 end
 FindFirstOf = function(name)

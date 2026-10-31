@@ -986,12 +986,181 @@ local function HandleCoopEvent(cmd, args)
                 end
             end
 
-        elseif cmd == "GUEST_TRASH" and Role == "host" then
-            local id = args:match("^%s*(%S+)")
-            local e = id and HostEntities[id]
-            if e and e.kind == "trash" and e.actor:IsValid() then
-                Log("[WORLD] Partner picked up trash: " .. id)
-                pcall(function() e.actor:K2_DestroyActor() end)
+        elseif (cmd == "GUEST_TRASH" or cmd == "GUEST_ACT") and Role == "host" then
+            local id, act = args:match("^%s*(%S+)%s*(%S*)")
+            if not act or act == "" then act = "trash" end
+            if id then
+                local e = HostEntities[id]
+                if e and e.actor and e.actor:IsValid() then
+                    e.served = e.served or {}
+                    if not e.served[act] then
+                        local actor = e.actor
+                        local actSuccess = false
+
+                        if act == "trash" and e.kind == "trash" then
+                            Log("[WORLD] Partner picked up trash: " .. id)
+                            pcall(function() actor:K2_DestroyActor() end)
+                            e.served[act] = true
+                            actSuccess = true
+
+                        elseif (act == "fuel" or act == "car") and e.kind == "car" then
+                            Log("[WORLD] Partner fueled vehicle: " .. id)
+                            local aLoc = nil
+                            pcall(function() if actor.K2_GetActorLocation then aLoc = actor:K2_GetActorLocation() end end)
+                            local stations = FindAllOf("FuelStation_Bp_C") or FindAllOf("FuelStation") or {}
+                            local bestStation, bestDistSq = nil, 2500.0 * 2500.0
+                            for _, fs in ipairs(stations) do
+                                if fs:IsValid() then
+                                    local fLoc = nil
+                                    pcall(function() if fs.K2_GetActorLocation then fLoc = fs:K2_GetActorLocation() end end)
+                                    if fLoc and aLoc then
+                                        local dx, dy, dz = fLoc.X - aLoc.X, fLoc.Y - aLoc.Y, fLoc.Z - aLoc.Z
+                                        local distSq = dx * dx + dy * dy + dz * dz
+                                        if distSq < bestDistSq then
+                                            bestDistSq = distSq
+                                            bestStation = fs
+                                        end
+                                    else
+                                        bestStation = fs
+                                    end
+                                end
+                            end
+
+                            if bestStation and bestStation:IsValid() then
+                                pcall(function()
+                                    if bestStation.FinishFuelMiniGame then
+                                        bestStation:FinishFuelMiniGame(50.0, 50.0)
+                                    elseif bestStation.DebugFinish then
+                                        bestStation:DebugFinish()
+                                    end
+                                end)
+                            end
+
+                            pcall(function()
+                                local driver = actor.Driver or actor.RequiredCharacter
+                                if driver and driver:IsValid() and driver.CurrentActiveTask and driver.CurrentActiveTask:IsValid() then
+                                    driver.CurrentActiveTask:TaskFinished()
+                                    if driver.BeginFinishTaskCharacter then
+                                        driver:BeginFinishTaskCharacter(driver.CurrentActiveTask, 0, "CoopFuel")
+                                    end
+                                end
+                            end)
+                            e.served[act] = true
+                            actSuccess = true
+
+                        elseif act == "repair" and e.kind == "car" then
+                            Log("[WORLD] Partner repaired vehicle: " .. id)
+                            pcall(function()
+                                if actor.VehiclesParts then
+                                    for _, part in ipairs(actor.VehiclesParts) do
+                                        if part and part:IsValid() and part.UpdateVehiclePart then
+                                            part:UpdateVehiclePart(false, true)
+                                        end
+                                    end
+                                end
+                                local driver = actor.Driver or actor.RequiredCharacter
+                                if driver and driver:IsValid() and driver.CurrentActiveTask and driver.CurrentActiveTask:IsValid() then
+                                    driver.CurrentActiveTask:TaskFinished()
+                                    if driver.BeginFinishTaskCharacter then
+                                        driver:BeginFinishTaskCharacter(driver.CurrentActiveTask, 0, "CoopRepair")
+                                    end
+                                end
+                            end)
+                            e.served[act] = true
+                            actSuccess = true
+
+                        elseif act == "wash" and e.kind == "car" then
+                            Log("[WORLD] Partner washed vehicle: " .. id)
+                            local aLoc = nil
+                            pcall(function() if actor.K2_GetActorLocation then aLoc = actor:K2_GetActorLocation() end end)
+                            local carWashes = FindAllOf("CarWash_Building_BP_C") or FindAllOf("CarWash") or {}
+                            local bestWash, bestDistSq = nil, 2500.0 * 2500.0
+                            for _, cw in ipairs(carWashes) do
+                                if cw:IsValid() then
+                                    local wLoc = nil
+                                    pcall(function() if cw.K2_GetActorLocation then wLoc = cw:K2_GetActorLocation() end end)
+                                    if wLoc and aLoc then
+                                        local dx, dy, dz = wLoc.X - aLoc.X, wLoc.Y - aLoc.Y, wLoc.Z - aLoc.Z
+                                        local distSq = dx * dx + dy * dy + dz * dz
+                                        if distSq < bestDistSq then
+                                            bestDistSq = distSq
+                                            bestWash = cw
+                                        end
+                                    else
+                                        bestWash = cw
+                                    end
+                                end
+                            end
+                            if bestWash and bestWash:IsValid() and bestWash.OnTrashRemovedFromPump then
+                                pcall(function() bestWash:OnTrashRemovedFromPump(0, 0) end)
+                            end
+                            pcall(function()
+                                local driver = actor.Driver or actor.RequiredCharacter
+                                if driver and driver:IsValid() and driver.CurrentActiveTask and driver.CurrentActiveTask:IsValid() then
+                                    driver.CurrentActiveTask:TaskFinished()
+                                    if driver.BeginFinishTaskCharacter then
+                                        driver:BeginFinishTaskCharacter(driver.CurrentActiveTask, 0, "CoopWash")
+                                    end
+                                end
+                            end)
+                            e.served[act] = true
+                            actSuccess = true
+
+                        elseif (act == "checkout" or act == "npc") and e.kind == "npc" then
+                            Log("[WORLD] Partner checked out customer: " .. id)
+                            pcall(function()
+                                local task = actor.CurrentActiveTask
+                                if task and task:IsValid() then
+                                    task:TaskFinished()
+                                    if actor.BeginFinishTaskCharacter then
+                                        actor:BeginFinishTaskCharacter(task, 0, "CoopCheckout")
+                                    end
+                                end
+                            end)
+                            local aLoc = nil
+                            pcall(function() if actor.K2_GetActorLocation then aLoc = actor:K2_GetActorLocation() end end)
+                            local shops = FindAllOf("CashShop") or {}
+                            local bestShop, bestDistSq = nil, 1000.0 * 1000.0
+                            for _, cs in ipairs(shops) do
+                                if cs:IsValid() then
+                                    local sLoc = nil
+                                    pcall(function() if cs.K2_GetActorLocation then sLoc = cs:K2_GetActorLocation() end end)
+                                    if sLoc and aLoc then
+                                        local dx, dy, dz = sLoc.X - aLoc.X, sLoc.Y - aLoc.Y, sLoc.Z - aLoc.Z
+                                        local distSq = dx * dx + dy * dy + dz * dz
+                                        if distSq < bestDistSq then
+                                            bestDistSq = distSq
+                                            bestShop = cs
+                                        end
+                                    else
+                                        bestShop = cs
+                                    end
+                                end
+                            end
+                            if bestShop and bestShop:IsValid() then
+                                pcall(function()
+                                    if bestShop.MiniGameFinish then
+                                        bestShop:MiniGameFinish(actor)
+                                    elseif bestShop.FinishCashGame then
+                                        bestShop:FinishCashGame()
+                                    end
+                                end)
+                            end
+                            e.served[act] = true
+                            actSuccess = true
+                        end
+
+                        if actSuccess then
+                            SendEvent("ACT_OK " .. id .. " " .. act)
+                        end
+                    end
+                end
+            end
+
+        elseif cmd == "ACT_OK" and Role == "guest" then
+            local id, act = args:match("^%s*(%S+)%s*(%S*)")
+            if id and act then
+                Log(string.format("[CO-OP] Host confirmed action %s on %s", act, id))
             end
 
         elseif cmd == "TIME" and Role == "guest" then
@@ -1356,25 +1525,43 @@ RegisterKeyBind(Key.F7, function()
     end
 end)
 
--- Guest: F next to a host trash item picks it up in the host's world
+-- Guest: F next to a host proxy (trash, vehicle, customer) interacts with it in the host's world
+local LastGuestActionTime = 0
+local LastGuestActionEntity = nil
 RegisterKeyBind(Key.F, function()
     if Role ~= "guest" then return end
     SafeExec(function()
         local player = GetLocalPlayer()
         if not player then return end
         local pl = player:K2_GetActorLocation()
-        local best, bestD = nil, 250.0 * 250.0
+        local best, bestD, bestKind = nil, 300.0 * 300.0, nil
         for id, p in pairs(Proxies) do
-            if p.kind == "trash" and p.cur then
+            if p.cur then
                 local dx, dy, dz = p.cur.X - pl.X, p.cur.Y - pl.Y, p.cur.Z - pl.Z
                 local d = dx * dx + dy * dy + dz * dz
-                if d < bestD then best, bestD = id, d end
+                if d < bestD then
+                    best, bestD, bestKind = id, d, p.kind
+                end
             end
         end
         if best then
-            SendEvent("GUEST_TRASH " .. best)
-            DestroyProxy(Proxies[best])
-            Proxies[best] = nil
+            local now = os.time()
+            if best == LastGuestActionEntity and (now - LastGuestActionTime < 1) then
+                return
+            end
+            LastGuestActionTime = now
+            LastGuestActionEntity = best
+
+            if bestKind == "trash" then
+                SendEvent("GUEST_TRASH " .. best)
+                SendEvent("GUEST_ACT " .. best .. " trash")
+                DestroyProxy(Proxies[best])
+                Proxies[best] = nil
+            elseif bestKind == "car" then
+                SendEvent("GUEST_ACT " .. best .. " fuel")
+            elseif bestKind == "npc" then
+                SendEvent("GUEST_ACT " .. best .. " checkout")
+            end
         end
     end)
 end)
